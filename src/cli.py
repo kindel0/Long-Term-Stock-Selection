@@ -292,11 +292,17 @@ def backtest(data, rebuild_panel, simfin_dir, start, end, capital, stocks, min_c
 @click.option("--data", "-d", type=click.Path(exists=True), help="Path to panel data")
 @click.option("--stocks", "-n", type=int, default=15, help="Number of stocks")
 @click.option("--dry-run", is_flag=True, help="Show orders without executing")
-def paper_trade(data, stocks, dry_run):
-    """Run paper trading mode."""
+@click.option("--algorithm", type=click.Choice(["ridge", "rf"]), default="ridge",
+              help="ML algorithm: ridge (recommended) or rf")
+@click.option("--roe-weight", type=float, default=0.5,
+              help="Weight for ROE factor (0-1)")
+def paper_trade(data, stocks, dry_run, algorithm, roe_weight):
+    """Run paper trading mode with IBKR connection."""
+    import asyncio
     from .models.stock_selection_rf import StockSelectionRF
     from .trading.order_generator import OrderGenerator
     from .trading.execution_engine import ExecutionEngine, ExecutionMode
+    from .trading.ibkr_client import IBKRClient
 
     click.echo("=" * 60)
     click.echo("PAPER TRADING MODE")
@@ -305,33 +311,79 @@ def paper_trade(data, stocks, dry_run):
     if not data:
         data = str(DEFAULT_PANEL_PATH)
 
-    click.echo(f"Data: {data}")
-    click.echo(f"Target stocks: {stocks}")
+    # Connect to IBKR
+    click.echo("\nConnecting to IBKR (paper account)...")
+    ibkr = IBKRClient(mode="paper")
 
-    # Load data
+    async def connect_ibkr():
+        return await ibkr.connect()
+
+    try:
+        loop = asyncio.get_event_loop()
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
+    connected = loop.run_until_complete(connect_ibkr())
+
+    if not connected:
+        click.echo("ERROR: Could not connect to IBKR.")
+        click.echo("Make sure TWS or IB Gateway is running with API enabled.")
+        click.echo("  - TWS: File > Global Configuration > API > Settings")
+        click.echo("  - Enable 'Enable ActiveX and Socket Clients'")
+        click.echo("  - Paper trading port should be 7497")
+        if dry_run:
+            click.echo("\nContinuing in dry-run mode without IBKR...")
+            ibkr = None
+        else:
+            sys.exit(1)
+
+    # Get account info and positions from IBKR
+    if ibkr and ibkr.is_connected:
+        async def get_account_data():
+            summary = await ibkr.get_account_summary()
+            positions = await ibkr.get_positions()
+            return summary, positions
+
+        account_summary, current_positions = loop.run_until_complete(get_account_data())
+
+        if account_summary:
+            click.echo(f"\nAccount Value: ${account_summary.net_liquidation:,.2f}")
+            click.echo(f"Cash Available: ${account_summary.total_cash:,.2f}")
+            account_value = account_summary.net_liquidation
+        else:
+            account_value = 30000
+            click.echo(f"\nUsing default account value: ${account_value:,.2f}")
+
+        if not current_positions.empty:
+            click.echo(f"\nCurrent Positions ({len(current_positions)}):")
+            for _, pos in current_positions.iterrows():
+                click.echo(f"  {pos['symbol']}: {pos['shares']:.0f} shares @ ${pos['avg_cost']:.2f}")
+        else:
+            click.echo("\nNo current positions")
+            current_positions = pd.DataFrame()
+    else:
+        account_value = 30000
+        current_positions = pd.DataFrame()
+
+    # Load panel data
+    click.echo(f"\nLoading data: {data}")
     df = pd.read_csv(data)
     df["public_date"] = pd.to_datetime(df["public_date"])
 
-    # Get latest date
     latest_date = df["public_date"].max()
     click.echo(f"Latest data: {latest_date.date()}")
 
-    # TODO: Get current positions from IBKR
-    # For now, assume empty portfolio
-    current_positions = pd.DataFrame()
-
-    # Train model and get selections
-    click.echo("\nTraining model...")
-    model = StockSelectionRF()
+    # Train model
+    click.echo(f"\nTraining model (algorithm={algorithm}, roe_weight={roe_weight})...")
+    model = StockSelectionRF(algorithm=algorithm, roe_weight=roe_weight)
     feature_cols = model.prepare_features(df)
 
-    # Use recent training data
     train_end = latest_date - pd.DateOffset(months=3)
     train_df = df[df["public_date"] <= train_end].copy()
 
     X_train = train_df[feature_cols]
-    # Use best available return column (prefer longer horizon for training)
-    return_cols = ["1yr_return", "6mo_return", "3mo_return", "1mo_return"]
+    return_cols = ["3mo_return", "1yr_return", "6mo_return", "1mo_return"]
     target_col = next((c for c in return_cols if c in train_df.columns), None)
     if target_col is None:
         raise click.ClickException("No return column found in data")
@@ -340,38 +392,78 @@ def paper_trade(data, stocks, dry_run):
 
     model.train(X_train, y_train, meta_train)
 
-    # Get current universe
+    # Get current universe and select stocks
     test_df = df[df["public_date"] == latest_date].copy()
-    X_test = test_df[feature_cols]
-    meta_test = test_df[["sector", "public_date", "TICKER", "MthCap"]]
+    X_test = test_df[feature_cols].copy()
+    meta_test = test_df[["sector", "public_date", "TICKER", "MthCap"]].copy()
 
-    # Handle missing
+    # Add ROE for factor weighting
+    if "roe" in test_df.columns and "roe" not in X_test.columns:
+        X_test["roe"] = test_df.loc[X_test.index, "roe"].values
+
     for col in model.feature_columns:
         if col not in X_test.columns:
             X_test[col] = 0
-    X_test = X_test[model.feature_columns].fillna(model.feature_medians_).fillna(0)
+    X_test_clean = X_test[model.feature_columns].fillna(model.feature_medians_).fillna(0)
 
-    # Select stocks
-    target_portfolio = model.select_stocks(X_test, meta_test, n=stocks)
+    if "roe" in test_df.columns:
+        X_test_clean["roe"] = test_df.loc[X_test_clean.index, "roe"].values
+
+    target_portfolio = model.select_stocks(X_test_clean, meta_test, n=stocks)
     click.echo(f"\nSelected {len(target_portfolio)} stocks:")
     for _, row in target_portfolio.iterrows():
         click.echo(f"  {row['TICKER']}: rank={row['predicted_rank']:.3f}")
 
-    # TODO: Fetch current prices
-    # For now, use placeholder prices
-    prices = {ticker: 100.0 for ticker in target_portfolio["TICKER"]}
+    # Fetch current prices from IBKR
+    target_symbols = list(target_portfolio["TICKER"])
+    current_symbols = list(current_positions["symbol"]) if not current_positions.empty else []
+    all_symbols = list(set(target_symbols + current_symbols))
 
-    # Generate orders
+    if ibkr and ibkr.is_connected:
+        click.echo(f"\nFetching prices for {len(all_symbols)} symbols...")
+
+        async def fetch_prices():
+            return await ibkr.get_prices(all_symbols)
+
+        prices = loop.run_until_complete(fetch_prices())
+        click.echo(f"  Got prices for {len(prices)} symbols")
+
+        # Fill missing with panel prices if available
+        for symbol in all_symbols:
+            if symbol not in prices:
+                panel_price = test_df.loc[test_df["TICKER"] == symbol, "MthPrc"]
+                if not panel_price.empty:
+                    prices[symbol] = panel_price.iloc[0]
+                else:
+                    prices[symbol] = 100.0  # Fallback
+    else:
+        # Use panel prices
+        prices = {}
+        for symbol in all_symbols:
+            panel_price = test_df.loc[test_df["TICKER"] == symbol, "MthPrc"]
+            if not panel_price.empty:
+                prices[symbol] = panel_price.iloc[0]
+            else:
+                prices[symbol] = 100.0
+
+    # Generate rebalancing orders
     generator = OrderGenerator()
-    orders = generator.generate_initial_orders(
+    orders = generator.generate_rebalance_orders(
+        current_positions=current_positions,
         target_portfolio=target_portfolio,
-        account_value=30000,
+        account_value=account_value,
         prices=prices,
     )
 
+    if not orders:
+        click.echo("\nNo orders needed - portfolio is already at target.")
+        if ibkr and ibkr.is_connected:
+            loop.run_until_complete(ibkr.disconnect())
+        return
+
     # Execute
     mode = ExecutionMode.DRY_RUN if dry_run else ExecutionMode.PAPER
-    engine = ExecutionEngine(mode=mode)
+    engine = ExecutionEngine(mode=mode, ibkr_client=ibkr if not dry_run else None)
     engine.set_orders(orders)
     engine.review_orders()
 
@@ -382,13 +474,28 @@ def paper_trade(data, stocks, dry_run):
         else:
             click.echo("Execution cancelled")
 
+    # Disconnect
+    if ibkr and ibkr.is_connected:
+        loop.run_until_complete(ibkr.disconnect())
+        click.echo("\nDisconnected from IBKR")
+
 
 @cli.command()
 @click.option("--data", "-d", type=click.Path(exists=True), help="Path to panel data")
 @click.option("--stocks", "-n", type=int, default=15, help="Number of stocks")
 @click.option("--confirm", is_flag=True, required=True, help="Confirm live trading")
-def live_trade(data, stocks, confirm):
+@click.option("--algorithm", type=click.Choice(["ridge", "rf"]), default="ridge",
+              help="ML algorithm: ridge (recommended) or rf")
+@click.option("--roe-weight", type=float, default=0.5,
+              help="Weight for ROE factor (0-1)")
+def live_trade(data, stocks, confirm, algorithm, roe_weight):
     """Run live trading mode (requires --confirm flag)."""
+    import asyncio
+    from .models.stock_selection_rf import StockSelectionRF
+    from .trading.order_generator import OrderGenerator
+    from .trading.execution_engine import ExecutionEngine, ExecutionMode
+    from .trading.ibkr_client import IBKRClient
+
     if not confirm:
         click.echo("ERROR: Live trading requires --confirm flag")
         sys.exit(1)
@@ -396,10 +503,159 @@ def live_trade(data, stocks, confirm):
     click.echo("=" * 60)
     click.echo("LIVE TRADING MODE")
     click.echo("=" * 60)
-    click.echo("\nWARNING: This will execute real trades!")
+    click.echo("\n*** WARNING: This will execute REAL trades! ***\n")
 
-    click.echo("\nLive trading not yet implemented.")
-    click.echo("Use paper-trade mode for testing.")
+    if not data:
+        data = str(DEFAULT_PANEL_PATH)
+
+    # Connect to IBKR LIVE
+    click.echo("Connecting to IBKR (LIVE account)...")
+    ibkr = IBKRClient(mode="live")
+
+    try:
+        loop = asyncio.get_event_loop()
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
+    async def connect_ibkr():
+        return await ibkr.connect()
+
+    connected = loop.run_until_complete(connect_ibkr())
+
+    if not connected:
+        click.echo("ERROR: Could not connect to IBKR live account.")
+        click.echo("Make sure TWS or IB Gateway is running with API enabled.")
+        click.echo("  - Live trading port should be 7496")
+        sys.exit(1)
+
+    # Get account info
+    async def get_account_data():
+        summary = await ibkr.get_account_summary()
+        positions = await ibkr.get_positions()
+        return summary, positions
+
+    account_summary, current_positions = loop.run_until_complete(get_account_data())
+
+    if account_summary:
+        click.echo(f"\nAccount Value: ${account_summary.net_liquidation:,.2f}")
+        click.echo(f"Cash Available: ${account_summary.total_cash:,.2f}")
+        account_value = account_summary.net_liquidation
+    else:
+        click.echo("ERROR: Could not get account summary")
+        loop.run_until_complete(ibkr.disconnect())
+        sys.exit(1)
+
+    if not current_positions.empty:
+        click.echo(f"\nCurrent Positions ({len(current_positions)}):")
+        for _, pos in current_positions.iterrows():
+            click.echo(f"  {pos['symbol']}: {pos['shares']:.0f} shares @ ${pos['avg_cost']:.2f}")
+    else:
+        click.echo("\nNo current positions")
+        current_positions = pd.DataFrame()
+
+    # Load panel data
+    click.echo(f"\nLoading data: {data}")
+    df = pd.read_csv(data)
+    df["public_date"] = pd.to_datetime(df["public_date"])
+
+    latest_date = df["public_date"].max()
+    click.echo(f"Latest data: {latest_date.date()}")
+
+    # Train model
+    click.echo(f"\nTraining model (algorithm={algorithm}, roe_weight={roe_weight})...")
+    model = StockSelectionRF(algorithm=algorithm, roe_weight=roe_weight)
+    feature_cols = model.prepare_features(df)
+
+    train_end = latest_date - pd.DateOffset(months=3)
+    train_df = df[df["public_date"] <= train_end].copy()
+
+    X_train = train_df[feature_cols]
+    return_cols = ["3mo_return", "1yr_return", "6mo_return", "1mo_return"]
+    target_col = next((c for c in return_cols if c in train_df.columns), None)
+    if target_col is None:
+        raise click.ClickException("No return column found in data")
+    y_train = train_df[target_col]
+    meta_train = train_df[["sector", "public_date", "TICKER"]]
+
+    model.train(X_train, y_train, meta_train)
+
+    # Get current universe and select stocks
+    test_df = df[df["public_date"] == latest_date].copy()
+    X_test = test_df[feature_cols].copy()
+    meta_test = test_df[["sector", "public_date", "TICKER", "MthCap"]].copy()
+
+    if "roe" in test_df.columns and "roe" not in X_test.columns:
+        X_test["roe"] = test_df.loc[X_test.index, "roe"].values
+
+    for col in model.feature_columns:
+        if col not in X_test.columns:
+            X_test[col] = 0
+    X_test_clean = X_test[model.feature_columns].fillna(model.feature_medians_).fillna(0)
+
+    if "roe" in test_df.columns:
+        X_test_clean["roe"] = test_df.loc[X_test_clean.index, "roe"].values
+
+    target_portfolio = model.select_stocks(X_test_clean, meta_test, n=stocks)
+    click.echo(f"\nSelected {len(target_portfolio)} stocks:")
+    for _, row in target_portfolio.iterrows():
+        click.echo(f"  {row['TICKER']}: rank={row['predicted_rank']:.3f}")
+
+    # Fetch prices
+    target_symbols = list(target_portfolio["TICKER"])
+    current_symbols = list(current_positions["symbol"]) if not current_positions.empty else []
+    all_symbols = list(set(target_symbols + current_symbols))
+
+    click.echo(f"\nFetching prices for {len(all_symbols)} symbols...")
+
+    async def fetch_prices():
+        return await ibkr.get_prices(all_symbols)
+
+    prices = loop.run_until_complete(fetch_prices())
+    click.echo(f"  Got prices for {len(prices)} symbols")
+
+    # Fill missing
+    for symbol in all_symbols:
+        if symbol not in prices:
+            panel_price = test_df.loc[test_df["TICKER"] == symbol, "MthPrc"]
+            if not panel_price.empty:
+                prices[symbol] = panel_price.iloc[0]
+            else:
+                click.echo(f"  WARNING: No price for {symbol}, skipping")
+
+    # Generate rebalancing orders
+    generator = OrderGenerator()
+    orders = generator.generate_rebalance_orders(
+        current_positions=current_positions,
+        target_portfolio=target_portfolio,
+        account_value=account_value,
+        prices=prices,
+    )
+
+    if not orders:
+        click.echo("\nNo orders needed - portfolio is already at target.")
+        loop.run_until_complete(ibkr.disconnect())
+        return
+
+    # Execute
+    engine = ExecutionEngine(mode=ExecutionMode.LIVE, ibkr_client=ibkr)
+    engine.set_orders(orders)
+    engine.review_orders()
+
+    # Extra confirmation for live trading
+    click.echo("\n" + "!" * 60)
+    click.echo("!!! FINAL CONFIRMATION - LIVE TRADING !!!")
+    click.echo("!" * 60)
+
+    if engine.get_approval():
+        engine.execute()
+        engine.print_execution_report()
+    else:
+        click.echo("Execution cancelled")
+
+    # Disconnect
+    loop.run_until_complete(ibkr.disconnect())
+    click.echo("\nDisconnected from IBKR")
 
 
 @cli.command()

@@ -123,6 +123,7 @@ def backtest(data, start, end, capital, stocks, min_cap, output, plot):
         n_stocks=stocks,
         initial_capital=capital,
         min_market_cap=min_cap,
+        target_col="1yr_return",
     )
 
     # Print results

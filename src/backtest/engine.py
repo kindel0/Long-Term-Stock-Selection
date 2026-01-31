@@ -212,8 +212,14 @@ class BacktestEngine:
         data = data.sort_values(["TICKER", "public_date"])
 
         # Ensure outcome_date exists for PIT filtering
-        if "outcome_date" not in data.columns and target_col == "3mo_return":
-            data["outcome_date"] = data["public_date"] + pd.DateOffset(months=3)
+        if "outcome_date" not in data.columns:
+            if target_col == "3mo_return":
+                data["outcome_date"] = data["public_date"] + pd.DateOffset(months=3)
+            elif target_col == "1yr_return":
+                data["outcome_date"] = data["public_date"] + pd.DateOffset(months=12)
+            else:
+                # Default to 3 months
+                data["outcome_date"] = data["public_date"] + pd.DateOffset(months=3)
 
         return data
 
@@ -345,8 +351,12 @@ class BacktestEngine:
         actual_returns = y_test.loc[selected_indices].dropna()
         portfolio_return = actual_returns.mean() if len(actual_returns) > 0 else 0.0
 
-        # Get benchmark return
-        end_date = test_date + pd.DateOffset(months=3)
+        # Get benchmark return (match holding period to target)
+        if target_col == "1yr_return":
+            holding_months = 12
+        else:
+            holding_months = 3
+        end_date = test_date + pd.DateOffset(months=holding_months)
         benchmark_return = self.benchmark.get_return(test_date, end_date)
         if benchmark_return is None:
             benchmark_return = y_test.mean()  # Fallback to universe average

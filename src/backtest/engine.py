@@ -402,6 +402,10 @@ class BacktestEngine:
         X_test_clean = X_test_clean[self.model.feature_columns]
         X_test_clean = X_test_clean.fillna(self.model.feature_medians_).fillna(0)
 
+        # Add ROE column for factor weighting (if available in original data)
+        if "roe" in test_df.columns and "roe" not in X_test_clean.columns:
+            X_test_clean["roe"] = test_df.loc[X_test_clean.index, "roe"].values
+
         # Select top stocks
         top_stocks = self.model.select_stocks(
             X_test_clean, meta_test, n=n_stocks

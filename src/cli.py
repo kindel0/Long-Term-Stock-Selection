@@ -112,7 +112,19 @@ def cli(verbose):
     default="cap_weighted",
     help="Weighting for SimFin benchmark",
 )
-def backtest(data, rebuild_panel, simfin_dir, start, end, capital, stocks, min_cap, rebalance_freq, rebalance_month, output, plot, benchmark_source, benchmark_weighting):
+@click.option(
+    "--algorithm",
+    type=click.Choice(["ridge", "rf"]),
+    default="ridge",
+    help="ML algorithm: ridge (recommended) or rf (random forest)",
+)
+@click.option(
+    "--roe-weight",
+    type=float,
+    default=0.5,
+    help="Weight for ROE factor (0-1). 0=pure model, 1=pure ROE. Default 0.5",
+)
+def backtest(data, rebuild_panel, simfin_dir, start, end, capital, stocks, min_cap, rebalance_freq, rebalance_month, output, plot, benchmark_source, benchmark_weighting, algorithm, roe_weight):
     """Run backtest simulation.
 
     Use --rebuild-panel to regenerate the panel from SimFin source files
@@ -194,6 +206,7 @@ def backtest(data, rebuild_panel, simfin_dir, start, end, capital, stocks, min_c
     click.echo(f"Stocks: {stocks}")
     click.echo(f"Min Cap: {min_cap}")
     click.echo(f"Benchmark: {benchmark_source} ({benchmark_weighting})")
+    click.echo(f"Algorithm: {algorithm} (ROE weight: {roe_weight})")
 
     # Load data
     click.echo("\nLoading data...")
@@ -202,7 +215,7 @@ def backtest(data, rebuild_panel, simfin_dir, start, end, capital, stocks, min_c
     click.echo(f"Loaded {len(df):,} rows")
 
     # Initialize model and engine
-    model = StockSelectionRF()
+    model = StockSelectionRF(algorithm=algorithm, roe_weight=roe_weight)
     engine = BacktestEngine(model)
 
     # Run backtest
@@ -245,6 +258,8 @@ def backtest(data, rebuild_panel, simfin_dir, start, end, capital, stocks, min_c
         "target_col": "1yr_return",
         "benchmark_source": benchmark_source,
         "benchmark_weighting": benchmark_weighting,
+        "algorithm": algorithm,
+        "roe_weight": roe_weight,
     }
 
     # Generate report

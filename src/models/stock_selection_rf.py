@@ -1,18 +1,21 @@
 """
-Unified Random Forest model for stock selection.
+Stock selection models for long-term investing.
 
-This is the single source of truth for the RF model, consolidating
-previously duplicated implementations across multiple scripts.
+Supports multiple algorithms:
+- Ridge regression (recommended - best risk-adjusted returns)
+- Random Forest (original Wynne 2023 methodology)
 
-Based on Wynne (2023) thesis methodology.
+Based on Wynne (2023) thesis methodology with improvements.
 """
 
 import logging
-from typing import Dict, List, Optional, Tuple, Any
+from typing import Dict, List, Optional, Tuple, Any, Literal
 
 import numpy as np
 import pandas as pd
 from sklearn.ensemble import RandomForestRegressor
+from sklearn.linear_model import Ridge
+from sklearn.preprocessing import StandardScaler
 
 from ..config import (
     RF_PARAMS,
@@ -26,35 +29,57 @@ from ..config import (
 
 logger = logging.getLogger(__name__)
 
+# Algorithm options
+ALGORITHM_CHOICES = Literal["ridge", "rf", "random_forest"]
+
 
 class StockSelectionRF:
     """
-    Random Forest model for long-term stock selection.
+    Stock selection model for long-term investing.
 
     Features:
+    - Multiple algorithms: Ridge (recommended) or Random Forest
+    - ROE factor weighting for quality tilt
     - Sector neutralization (fundamentals only, not macro)
     - Rank-based targets (prevents market timing bias)
-    - Consistent hyperparameters from central config
     - Proper index alignment across train/test splits
-    - Handles missing data with configurable thresholds
 
     Attributes:
-        model: The underlying RandomForestRegressor
+        model: The underlying ML model (Ridge or RandomForest)
+        algorithm: The algorithm being used
+        roe_weight: Weight for ROE factor (0-1)
         feature_columns: List of feature columns after preprocessing
         feature_importances: DataFrame with feature importance scores
         feature_medians_: Median values for imputation
-        sector_stats_: Sector statistics for neutralization
+        scaler_: StandardScaler for Ridge regression
     """
 
-    def __init__(self, params: Optional[Dict[str, Any]] = None):
+    def __init__(
+        self,
+        algorithm: ALGORITHM_CHOICES = "ridge",
+        roe_weight: float = 0.3,
+        params: Optional[Dict[str, Any]] = None,
+    ):
         """
         Initialize the stock selection model.
 
         Args:
-            params: Optional dict of RF hyperparameters. If None, uses RF_PARAMS from config.
+            algorithm: 'ridge' (recommended) or 'rf'/'random_forest'
+            roe_weight: Weight for ROE factor in final score (0-1).
+                       0 = pure model, 1 = pure ROE. Default 0.3.
+            params: Optional dict of model hyperparameters.
         """
-        self.params = params or RF_PARAMS.copy()
-        self.model = RandomForestRegressor(**self.params)
+        self.algorithm = algorithm.lower()
+        self.roe_weight = max(0.0, min(1.0, roe_weight))  # Clamp to 0-1
+
+        if self.algorithm in ("rf", "random_forest"):
+            self.params = params or RF_PARAMS.copy()
+            self.model = RandomForestRegressor(**self.params)
+            self.scaler_ = None
+        else:  # ridge (default)
+            self.params = params or {"alpha": 1.0}
+            self.model = Ridge(**self.params)
+            self.scaler_ = StandardScaler()
 
         self.feature_columns: Optional[List[str]] = None
         self.feature_importances: Optional[pd.DataFrame] = None
@@ -63,6 +88,8 @@ class StockSelectionRF:
 
         # Features that should not be sector-neutralized
         self._non_neutralized = set(NON_NEUTRALIZED_FEATURES)
+
+        logger.info(f"Initialized model: algorithm={self.algorithm}, roe_weight={self.roe_weight}")
 
     def prepare_features(self, df: pd.DataFrame) -> List[str]:
         """
@@ -275,7 +302,8 @@ class StockSelectionRF:
         y = y[valid_mask].copy()
         metadata = metadata[valid_mask].copy()
 
-        logger.info(f"Training RF on {len(X)} samples with {X.shape[1]} features")
+        algo_name = "Ridge" if self.algorithm == "ridge" else "RF"
+        logger.info(f"Training {algo_name} on {len(X)} samples with {X.shape[1]} features")
 
         # Handle missing data (with alignment)
         X_clean, y_clean, meta_clean, dropped = self.handle_missing_data(
@@ -285,20 +313,30 @@ class StockSelectionRF:
         # Neutralize features
         X_neutral = self.neutralize_features(X_clean, meta_clean)
 
-        # Transform target
+        # Transform target to ranks
         y_winsorized = self.winsorize_target(y_clean)
         y_ranked = self.rank_target(y_winsorized, meta_clean["public_date"])
 
         # Store feature columns
         self.feature_columns = X_neutral.columns.tolist()
 
-        # Fit the model
-        self.model.fit(X_neutral, y_ranked)
+        # Scale features for Ridge regression
+        if self.algorithm == "ridge":
+            X_scaled = self.scaler_.fit_transform(X_neutral)
+            self.model.fit(X_scaled, y_ranked)
 
-        # Store feature importances
-        self.feature_importances = pd.DataFrame(
-            {"feature": self.feature_columns, "importance": self.model.feature_importances_}
-        ).sort_values("importance", ascending=False)
+            # Store feature importances (absolute coefficients for Ridge)
+            self.feature_importances = pd.DataFrame({
+                "feature": self.feature_columns,
+                "importance": np.abs(self.model.coef_)
+            }).sort_values("importance", ascending=False)
+        else:
+            # Random Forest
+            self.model.fit(X_neutral, y_ranked)
+            self.feature_importances = pd.DataFrame({
+                "feature": self.feature_columns,
+                "importance": self.model.feature_importances_
+            }).sort_values("importance", ascending=False)
 
         logger.info(
             f"Top 5 features: {self.feature_importances.head()['feature'].tolist()}"
@@ -339,6 +377,10 @@ class StockSelectionRF:
         if metadata is not None:
             X_test = self.neutralize_features(X_test, metadata)
 
+        # Scale for Ridge regression
+        if self.algorithm == "ridge" and self.scaler_ is not None:
+            X_test = self.scaler_.transform(X_test)
+
         return self.model.predict(X_test)
 
     def select_stocks(
@@ -349,7 +391,10 @@ class StockSelectionRF:
         additional_data: Optional[pd.DataFrame] = None,
     ) -> pd.DataFrame:
         """
-        Select top n stocks based on predicted rankings.
+        Select top n stocks based on combined model + ROE score.
+
+        The final score is a weighted combination:
+            final_score = (1 - roe_weight) * model_score + roe_weight * roe_rank
 
         Args:
             X: Feature DataFrame
@@ -363,7 +408,7 @@ class StockSelectionRF:
         predictions = self.predict(X, metadata)
 
         results = pd.DataFrame(
-            {"predicted_rank": predictions, "TICKER": metadata.get("TICKER", X.index)},
+            {"model_score": predictions, "TICKER": metadata.get("TICKER", X.index)},
             index=X.index,
         )
 
@@ -377,6 +422,34 @@ class StockSelectionRF:
             for col in additional_data.columns:
                 if col not in results.columns:
                     results[col] = additional_data.loc[X.index, col].values
+
+        # Calculate ROE factor score
+        if self.roe_weight > 0 and "roe" in X.columns:
+            # Rank ROE (higher is better)
+            roe_values = X.loc[results.index, "roe"].copy()
+            results["roe"] = roe_values
+            results["roe_rank"] = roe_values.rank(pct=True, ascending=True)
+            results["roe_rank"] = results["roe_rank"].fillna(0.5)  # Neutral for missing
+
+            # Normalize model score to 0-1 range
+            model_min = results["model_score"].min()
+            model_max = results["model_score"].max()
+            if model_max > model_min:
+                results["model_rank"] = (results["model_score"] - model_min) / (model_max - model_min)
+            else:
+                results["model_rank"] = 0.5
+
+            # Combined score
+            results["predicted_rank"] = (
+                (1 - self.roe_weight) * results["model_rank"] +
+                self.roe_weight * results["roe_rank"]
+            )
+
+            logger.debug(f"Combined score: {1-self.roe_weight:.0%} model + {self.roe_weight:.0%} ROE")
+        else:
+            results["predicted_rank"] = results["model_score"]
+            if self.roe_weight > 0:
+                logger.warning("ROE weight specified but 'roe' column not found in features")
 
         # Select top n
         top_stocks = results.nlargest(n, "predicted_rank")
@@ -401,6 +474,9 @@ class StockSelectionRF:
         joblib.dump(
             {
                 "model": self.model,
+                "algorithm": self.algorithm,
+                "roe_weight": self.roe_weight,
+                "scaler": self.scaler_,
                 "feature_columns": self.feature_columns,
                 "feature_medians": self.feature_medians_,
                 "feature_importances": self.feature_importances,
@@ -417,8 +493,13 @@ class StockSelectionRF:
 
         data = joblib.load(path)
 
-        instance = cls(params=data["params"])
+        instance = cls(
+            algorithm=data.get("algorithm", "rf"),
+            roe_weight=data.get("roe_weight", 0.0),
+            params=data["params"]
+        )
         instance.model = data["model"]
+        instance.scaler_ = data.get("scaler")
         instance.feature_columns = data["feature_columns"]
         instance.feature_medians_ = data["feature_medians"]
         instance.feature_importances = data["feature_importances"]

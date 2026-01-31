@@ -1,5 +1,5 @@
-# Data files (large CSVs)
-data/
+# Data files (large CSVs) - only root data/ directory
+/data/
 
 # Generated results
 results/

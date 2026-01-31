@@ -40,9 +40,20 @@ def cli(verbose):
 @click.option(
     "--data",
     "-d",
-    type=click.Path(exists=True),
+    type=click.Path(),
     default=str(DEFAULT_PANEL_PATH),
     help="Path to panel dataset",
+)
+@click.option(
+    "--rebuild-panel",
+    is_flag=True,
+    help="Rebuild panel from SimFin source data before backtesting",
+)
+@click.option(
+    "--simfin-dir",
+    type=click.Path(exists=True),
+    default="data/simfin",
+    help="SimFin source directory (for --rebuild-panel)",
 )
 @click.option(
     "--start",
@@ -89,8 +100,13 @@ def cli(verbose):
     default="cap_weighted",
     help="Weighting for SimFin benchmark",
 )
-def backtest(data, start, end, capital, stocks, min_cap, output, plot, benchmark_source, benchmark_weighting):
-    """Run backtest simulation."""
+def backtest(data, rebuild_panel, simfin_dir, start, end, capital, stocks, min_cap, output, plot, benchmark_source, benchmark_weighting):
+    """Run backtest simulation.
+
+    Use --rebuild-panel to regenerate the panel from SimFin source files
+    before running the backtest. This ensures you're using the latest data.
+    """
+    from pathlib import Path
     from .models.stock_selection_rf import StockSelectionRF
     from .backtest.engine import BacktestEngine
     from .reports.charts import ChartGenerator
@@ -98,6 +114,39 @@ def backtest(data, start, end, capital, stocks, min_cap, output, plot, benchmark
     click.echo("=" * 60)
     click.echo("RUNNING BACKTEST")
     click.echo("=" * 60)
+
+    # Rebuild panel if requested
+    if rebuild_panel:
+        from .data.panel_builder import PanelBuilder
+
+        click.echo("\nRebuilding panel from SimFin source data...")
+        simfin_path = Path(simfin_dir)
+
+        # Check required files
+        required_files = [
+            "us-shareprices-daily.csv",
+            "us-income-quarterly.csv",
+            "us-balance-quarterly.csv",
+            "us-cashflow-quarterly.csv",
+        ]
+        missing = [f for f in required_files if not (simfin_path / f).exists()]
+        if missing:
+            click.echo(f"ERROR: Missing required SimFin files: {missing}", err=True)
+            click.echo(f"Please ensure files exist in: {simfin_path}", err=True)
+            return
+
+        builder = PanelBuilder(simfin_dir=simfin_path)
+        panel_df = builder.build(add_macro=True, apply_filters=True, winsorize=True)
+        builder.save(panel_df, data)
+        click.echo(f"Panel rebuilt: {panel_df.shape[0]:,} rows x {panel_df.shape[1]} columns")
+        del panel_df  # Free memory before loading
+
+    # Check if data file exists
+    data_path = Path(data)
+    if not data_path.exists():
+        click.echo(f"ERROR: Panel file not found: {data}", err=True)
+        click.echo("Run with --rebuild-panel to generate it from SimFin source files", err=True)
+        return
 
     # Parse dates
     if len(start) == 4:
@@ -110,7 +159,7 @@ def backtest(data, start, end, capital, stocks, min_cap, output, plot, benchmark
     else:
         end_date = datetime.strptime(end, "%Y-%m-%d")
 
-    click.echo(f"Data: {data}")
+    click.echo(f"\nData: {data}")
     click.echo(f"Period: {start_date.date()} to {end_date.date()}")
     click.echo(f"Capital: ${capital:,.0f}")
     click.echo(f"Stocks: {stocks}")
@@ -121,7 +170,7 @@ def backtest(data, start, end, capital, stocks, min_cap, output, plot, benchmark
     click.echo("\nLoading data...")
     df = pd.read_csv(data)
     df["public_date"] = pd.to_datetime(df["public_date"])
-    click.echo(f"Loaded {len(df)} rows")
+    click.echo(f"Loaded {len(df):,} rows")
 
     # Initialize model and engine
     model = StockSelectionRF()
@@ -294,23 +343,81 @@ def tax_report(year, format, output):
 
 
 @cli.command()
-@click.option("--rebuild", is_flag=True, help="Rebuild from raw SimFin data")
-@click.option("--add-macro", is_flag=True, default=True, help="Add FRED macro features")
+@click.option(
+    "--simfin-dir",
+    type=click.Path(exists=True),
+    default="data/simfin",
+    help="Directory with SimFin CSV files",
+)
+@click.option("--add-macro/--no-macro", default=True, help="Add FRED macro features")
+@click.option("--filters/--no-filters", default=True, help="Apply quality filters")
+@click.option("--winsorize/--no-winsorize", default=True, help="Winsorize ratio columns")
+@click.option(
+    "--format",
+    type=click.Choice(["csv", "parquet"]),
+    default="csv",
+    help="Output format",
+)
 @click.option("--output", "-o", type=click.Path(), default=str(DEFAULT_PANEL_PATH))
-def build_panel(rebuild, add_macro, output):
-    """Build or rebuild the panel dataset."""
+def build_panel(simfin_dir, add_macro, filters, winsorize, format, output):
+    """Build panel dataset from SimFin source files.
+
+    Required source files in --simfin-dir:
+    - us-shareprices-daily.csv
+    - us-income-quarterly.csv
+    - us-balance-quarterly.csv
+    - us-cashflow-quarterly.csv
+    - us-companies.csv
+    - industries.csv
+    """
+    from pathlib import Path
     from .data.panel_builder import PanelBuilder
 
     click.echo("=" * 60)
     click.echo("BUILDING PANEL DATASET")
     click.echo("=" * 60)
 
-    builder = PanelBuilder()
-    panel = builder.build(add_macro=add_macro)
-    builder.save(panel, output)
+    simfin_path = Path(simfin_dir)
+    click.echo(f"SimFin source: {simfin_path}")
 
-    click.echo(f"\nSaved: {output}")
-    click.echo(f"Shape: {panel.shape}")
+    # Check required files
+    required_files = [
+        "us-shareprices-daily.csv",
+        "us-income-quarterly.csv",
+        "us-balance-quarterly.csv",
+        "us-cashflow-quarterly.csv",
+    ]
+    missing = [f for f in required_files if not (simfin_path / f).exists()]
+    if missing:
+        click.echo(f"ERROR: Missing required files: {missing}", err=True)
+        return
+
+    click.echo(f"Output: {output}")
+    click.echo(f"Options: macro={add_macro}, filters={filters}, winsorize={winsorize}")
+    click.echo()
+
+    builder = PanelBuilder(simfin_dir=simfin_path)
+    panel = builder.build(
+        add_macro=add_macro,
+        apply_filters=filters,
+        winsorize=winsorize,
+    )
+
+    # Save with specified format
+    if format == "parquet":
+        output_path = output.replace(".csv", ".parquet") if output.endswith(".csv") else output
+        builder.save(panel, output_path, format="parquet")
+    else:
+        builder.save(panel, output)
+
+    click.echo()
+    click.echo("=" * 60)
+    click.echo("PANEL COMPLETE")
+    click.echo("=" * 60)
+    click.echo(f"Saved: {output}")
+    click.echo(f"Shape: {panel.shape[0]:,} rows x {panel.shape[1]} columns")
+    click.echo(f"Date range: {panel['public_date'].min().date()} to {panel['public_date'].max().date()}")
+    click.echo(f"Tickers: {panel['TICKER'].nunique():,}")
 
 
 @cli.command()

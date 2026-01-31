@@ -1,9 +1,9 @@
 # Data files (large CSVs) - only root data/ directory
 /data/
 
-# Generated results
-results/
-reports/
+# Generated results (only root directories)
+/results/
+/reports/
 
 # macOS
 .DS_Store

@@ -34,7 +34,8 @@ class PeriodResult:
 
     date: datetime
     portfolio_return: float
-    benchmark_return: float
+    benchmark_return: float  # Universe benchmark (SimFin)
+    sp500_return: float  # S&P 500 benchmark
     n_stocks: int
     selected_stocks: List[str]
     predictions: Dict[str, float]
@@ -49,13 +50,16 @@ class BacktestResult:
 
     periods: List[PeriodResult]
     metrics: PerformanceMetrics
-    benchmark_metrics: PerformanceMetrics
+    benchmark_metrics: PerformanceMetrics  # Universe benchmark
+    sp500_metrics: PerformanceMetrics = None  # S&P 500 benchmark
 
     # Time series
     portfolio_returns: pd.Series = field(default_factory=pd.Series)
-    benchmark_returns: pd.Series = field(default_factory=pd.Series)
+    benchmark_returns: pd.Series = field(default_factory=pd.Series)  # Universe
+    sp500_returns: pd.Series = field(default_factory=pd.Series)  # S&P 500
     cumulative_returns: pd.Series = field(default_factory=pd.Series)
     benchmark_cumulative: pd.Series = field(default_factory=pd.Series)
+    sp500_cumulative: pd.Series = field(default_factory=pd.Series)
 
     # Summary stats
     total_fees: float = 0.0
@@ -70,6 +74,7 @@ class BacktestResult:
                 "date": p.date,
                 "portfolio_return": p.portfolio_return,
                 "benchmark_return": p.benchmark_return,
+                "sp500_return": p.sp500_return,
                 "n_stocks": p.n_stocks,
                 "fees": p.fees_paid,
                 "turnover": p.turnover,
@@ -186,13 +191,13 @@ class BacktestEngine:
                 f"from {start_date.date()} to {end_date.date()}"
             )
 
-        # Fetch yfinance benchmark data only if needed as fallback
-        if benchmark_source == "yfinance":
-            self.benchmark.fetch_data(start_date, end_date)
+        # Always fetch S&P 500 data for comparison
+        self.benchmark.fetch_data(start_date, end_date)
 
         # Store benchmark settings
         self._benchmark_source = benchmark_source
         self._benchmark_weighting = benchmark_weighting
+        self._target_col = target_col
 
         # Run backtest
         periods = []
@@ -417,10 +422,11 @@ class BacktestEngine:
                 if pd.notna(ret):
                     actual_returns_dict[ticker] = float(ret)
 
-        # Get benchmark return - prefer SimFin data
+        # Get benchmark returns
         benchmark_return = self._calculate_benchmark_return(
             test_df, y_test, target_col
         )
+        sp500_return = self._calculate_sp500_return(test_date, target_col)
 
         # Calculate turnover
         current_holdings = set(selected_tickers)
@@ -441,6 +447,7 @@ class BacktestEngine:
             date=test_date,
             portfolio_return=portfolio_return,
             benchmark_return=benchmark_return,
+            sp500_return=sp500_return,
             n_stocks=len(actual_returns_dict),
             selected_stocks=selected_tickers,
             predictions=dict(zip(selected_tickers, top_stocks["predicted_rank"].tolist())),
@@ -527,15 +534,47 @@ class BacktestEngine:
         logger.warning("No benchmark data available, returning 0")
         return 0.0
 
+    def _calculate_sp500_return(
+        self,
+        test_date: datetime,
+        target_col: str,
+    ) -> float:
+        """
+        Calculate S&P 500 return for the holding period.
+
+        Args:
+            test_date: Start date of the period
+            target_col: Target column name (determines holding period)
+
+        Returns:
+            S&P 500 return as decimal, or 0.0 if unavailable
+        """
+        if target_col == "1yr_return":
+            holding_months = 12
+        else:
+            holding_months = 3
+
+        end_date = test_date + pd.DateOffset(months=holding_months)
+        sp500_return = self.benchmark.get_return(test_date, end_date)
+
+        if sp500_return is not None:
+            logger.debug(f"S&P 500 return: {sp500_return:.4f}")
+            return sp500_return
+
+        logger.warning(f"S&P 500 data unavailable for {test_date.date()}")
+        return 0.0
+
     def _compile_results(
         self, periods: List[PeriodResult], freq: str
     ) -> BacktestResult:
         """Compile period results into final backtest result."""
         if not periods:
+            empty_metrics = calculate_metrics(pd.Series(), periods_per_year=4)
             return BacktestResult(
                 periods=[],
-                metrics=calculate_metrics(pd.Series(), periods_per_year=4),
-                benchmark_metrics=calculate_metrics(pd.Series(), periods_per_year=4),
+                metrics=empty_metrics,
+                benchmark_metrics=empty_metrics,
+                sp500_metrics=empty_metrics,
             )
 
         # Extract returns series
@@ -546,10 +585,14 @@ class BacktestEngine:
         bench_returns = pd.Series(
             [p.benchmark_return for p in periods], index=dates
         )
+        sp500_returns = pd.Series(
+            [p.sp500_return for p in periods], index=dates
+        )
 
         # Calculate cumulative
         cum_port = (1 + port_returns).cumprod()
         cum_bench = (1 + bench_returns).cumprod()
+        cum_sp500 = (1 + sp500_returns).cumprod()
 
         # Calculate metrics - periods_per_year based on frequency
         if freq in ("A", "Y"):
@@ -565,6 +608,9 @@ class BacktestEngine:
         bench_metrics = calculate_metrics(
             bench_returns, periods_per_year=periods_per_year
         )
+        sp500_metrics = calculate_metrics(
+            sp500_returns, periods_per_year=periods_per_year
+        )
 
         # Summary stats
         total_fees = sum(p.fees_paid for p in periods)
@@ -574,10 +620,13 @@ class BacktestEngine:
             periods=periods,
             metrics=metrics,
             benchmark_metrics=bench_metrics,
+            sp500_metrics=sp500_metrics,
             portfolio_returns=port_returns,
             benchmark_returns=bench_returns,
+            sp500_returns=sp500_returns,
             cumulative_returns=cum_port,
             benchmark_cumulative=cum_bench,
+            sp500_cumulative=cum_sp500,
             total_fees=total_fees,
             avg_turnover=avg_turnover,
             n_periods=len(periods),
@@ -600,15 +649,34 @@ class BacktestEngine:
         print(f"Sharpe Ratio:      {m.sharpe_ratio:>8.2f}")
         print(f"Max Drawdown:      {m.max_drawdown * 100:>8.2f}%")
 
-        print("\n--- BENCHMARK ---")
+        print("\n--- UNIVERSE BENCHMARK (Mid Cap+) ---")
         b = result.benchmark_metrics
         print(f"Total Return:      {b.total_return * 100:>8.2f}%")
         print(f"Annualized Return: {b.annualized_return * 100:>8.2f}%")
 
-        print("\n--- VS BENCHMARK ---")
+        print("\n--- S&P 500 ---")
+        s = result.sp500_metrics
+        if s is not None:
+            print(f"Total Return:      {s.total_return * 100:>8.2f}%")
+            print(f"Annualized Return: {s.annualized_return * 100:>8.2f}%")
+        else:
+            print("(Data unavailable)")
+
+        print("\n--- VS UNIVERSE BENCHMARK ---")
         print(f"Alpha:             {m.alpha * 100:>8.2f}%")
         print(f"Beta:              {m.beta:>8.2f}")
         print(f"Excess Return:     {m.excess_return * 100:>8.2f}%")
         print(f"Win Rate:          {m.win_rate * 100:>8.1f}%")
+
+        # Calculate vs S&P 500
+        if s is not None and len(result.sp500_returns) > 0:
+            port_total = result.cumulative_returns.iloc[-1] - 1
+            sp500_total = result.sp500_cumulative.iloc[-1] - 1
+            excess_vs_sp500 = port_total - sp500_total
+            wins_vs_sp500 = (result.portfolio_returns > result.sp500_returns).sum()
+            win_rate_vs_sp500 = wins_vs_sp500 / len(result.portfolio_returns)
+            print("\n--- VS S&P 500 ---")
+            print(f"Excess Return:     {excess_vs_sp500 * 100:>8.2f}%")
+            print(f"Win Rate:          {win_rate_vs_sp500 * 100:>8.1f}%")
 
         print("=" * 70)

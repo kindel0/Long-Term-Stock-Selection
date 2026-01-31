@@ -3,6 +3,7 @@ data/
 
 # Generated results
 results/
+reports/
 
 # macOS
 .DS_Store
@@ -10,9 +11,33 @@ results/
 # Python
 __pycache__/
 *.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
 
 # Jupyter
 .ipynb_checkpoints/
 
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
 # Excel temp files
 ~$*.xlsx
+
+# Logs
+*.log

@@ -1,0 +1,41 @@
+# Core dependencies
+pandas>=2.0
+numpy>=1.24
+scikit-learn>=1.3
+
+# Visualization
+matplotlib>=3.7
+seaborn>=0.12
+
+# Data sources
+yfinance>=0.2
+pandas-datareader>=0.10
+
+# CLI
+click>=8.1
+
+# Data formats
+pyarrow>=12.0
+pyyaml>=6.0
+
+# Dates
+python-dateutil>=2.8
+
+# Testing
+pytest>=7.0
+pytest-cov>=4.0
+
+# Optional: IBKR integration
+# ib_insync>=0.9.86
+
+# Optional: PDF reports
+# reportlab>=4.0
+
+# Optional: Interactive charts
+# plotly>=5.15
+
+# Optional: Dashboard
+# streamlit>=1.20
+
+# Model persistence
+joblib>=1.3

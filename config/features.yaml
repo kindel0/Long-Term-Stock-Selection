@@ -1,0 +1,216 @@
+# Feature Configuration
+# ====================
+# Defines feature categories and their properties
+
+valuation:
+  description: "Price-based valuation ratios"
+  features:
+    - name: bm
+      description: Book-to-market ratio
+      neutralize: true
+    - name: ptb
+      description: Price-to-book ratio
+      neutralize: true
+    - name: ps
+      description: Price-to-sales ratio
+      neutralize: true
+    - name: pcf
+      description: Price-to-cash-flow ratio
+      neutralize: true
+    - name: pe_inc
+      description: P/E ratio (income)
+      neutralize: true
+    - name: pe_exi
+      description: P/E ratio (excluding items)
+      neutralize: true
+    - name: pe_op_basic
+      description: P/E ratio (operating, basic)
+      neutralize: true
+    - name: pe_op_dil
+      description: P/E ratio (operating, diluted)
+      neutralize: true
+    - name: evm
+      description: EV/EBITDA ratio
+      neutralize: true
+    - name: dpr
+      description: Dividend payout ratio
+      neutralize: true
+    - name: divyield
+      description: Dividend yield
+      neutralize: true
+
+profitability:
+  description: "Return and margin metrics"
+  features:
+    - name: npm
+      description: Net profit margin
+      neutralize: true
+    - name: gpm
+      description: Gross profit margin
+      neutralize: true
+    - name: roa
+      description: Return on assets
+      neutralize: true
+    - name: roe
+      description: Return on equity
+      neutralize: true
+    - name: roce
+      description: Return on capital employed
+      neutralize: true
+    - name: opmbd
+      description: Operating margin before depreciation
+      neutralize: true
+    - name: opmad
+      description: Operating margin after depreciation
+      neutralize: true
+    - name: ptpm
+      description: Pre-tax profit margin
+      neutralize: true
+    - name: cfm
+      description: Cash flow margin
+      neutralize: true
+    - name: efftax
+      description: Effective tax rate
+      neutralize: true
+    - name: GProf
+      description: Gross profitability (GP/Assets)
+      neutralize: true
+
+solvency:
+  description: "Debt and leverage ratios"
+  features:
+    - name: de_ratio
+      description: Debt-to-equity ratio
+      neutralize: true
+    - name: debt_at
+      description: Debt-to-assets ratio
+      neutralize: true
+    - name: debt_capital
+      description: Debt-to-capital ratio
+      neutralize: true
+    - name: capital_ratio
+      description: Capital ratio (equity/assets)
+      neutralize: true
+    - name: intcov
+      description: Interest coverage ratio
+      neutralize: true
+    - name: dltt_be
+      description: Long-term debt / book equity
+      neutralize: true
+
+liquidity:
+  description: "Short-term liquidity ratios"
+  features:
+    - name: curr_ratio
+      description: Current ratio
+      neutralize: true
+    - name: quick_ratio
+      description: Quick ratio
+      neutralize: true
+    - name: cash_ratio
+      description: Cash ratio
+      neutralize: true
+    - name: cash_conversion
+      description: Cash conversion (OCF/NI)
+      neutralize: true
+
+efficiency:
+  description: "Asset utilization metrics"
+  features:
+    - name: at_turn
+      description: Asset turnover
+      neutralize: true
+    - name: inv_turn
+      description: Inventory turnover
+      neutralize: true
+    - name: rect_turn
+      description: Receivables turnover
+      neutralize: true
+    - name: pay_turn
+      description: Payables turnover
+      neutralize: true
+    - name: sale_invcap
+      description: Sales / Invested capital
+      neutralize: true
+    - name: sale_equity
+      description: Sales / Equity
+      neutralize: true
+    - name: sale_nwc
+      description: Sales / Net working capital
+      neutralize: true
+
+financial_soundness:
+  description: "Financial health indicators"
+  features:
+    - name: cash_lt
+      description: Cash / Total assets
+      neutralize: true
+    - name: invt_act
+      description: Inventory / Current assets
+      neutralize: true
+    - name: rect_act
+      description: Receivables / Current assets
+      neutralize: true
+    - name: short_debt
+      description: Short-term debt ratio
+      neutralize: true
+    - name: profit_lct
+      description: Net income / Current liabilities
+      neutralize: true
+    - name: ocf_lct
+      description: OCF / Current liabilities
+      neutralize: true
+    - name: cash_debt
+      description: Cash / Total debt
+      neutralize: true
+    - name: fcf_ocf
+      description: FCF / OCF ratio
+      neutralize: true
+
+other:
+  description: "Miscellaneous features"
+  features:
+    - name: accrual
+      description: Accruals / Assets
+      neutralize: true
+    - name: rd_sale
+      description: R&D / Sales
+      neutralize: true
+    - name: lt_ppent
+      description: PP&E / Assets
+      neutralize: true
+
+macro:
+  description: "Macroeconomic indicators from FRED"
+  features:
+    - name: FEDFUNDS
+      description: Federal Funds Rate
+      neutralize: false
+    - name: DGS10
+      description: 10-Year Treasury Yield
+      neutralize: false
+    - name: USACPIALLMINMEI
+      description: Consumer Price Index
+      neutralize: false
+    - name: 1mo_inf_rate
+      description: 1-month inflation rate
+      neutralize: false
+    - name: 1yr_inf_rate
+      description: 1-year inflation rate
+      neutralize: false
+    - name: GDP
+      description: GDP level
+      neutralize: false
+    - name: 1mo_GDP
+      description: 1-month GDP change
+      neutralize: false
+    - name: 1yr_GDP
+      description: 1-year GDP change
+      neutralize: false
+
+size:
+  description: "Size factor"
+  features:
+    - name: MthCap
+      description: Market capitalization
+      neutralize: false

@@ -1,0 +1,56 @@
+# Stock Trading System Configuration
+# ==================================
+
+# Trading Settings
+trading:
+  mode: paper  # paper or live
+  broker: ibkr
+  default_portfolio_size: 15
+  min_market_cap: "Mid Cap"
+  rebalance_frequency: quarterly  # quarterly or monthly
+
+# Backtest Defaults
+backtest:
+  start_year: 2017
+  end_year: 2024
+  initial_capital: 30000
+  n_stocks: 15
+  fee_simulation: true
+
+# Tax Settings (Ireland)
+tax:
+  jurisdiction: ireland
+  cgt_rate: 0.33
+  annual_exemption: 1270
+  w8ben_filed: true
+  us_withholding_rate: 0.15
+
+# Data Settings
+data:
+  panel_path: data/simfin_panel.csv
+  cache_enabled: true
+  fundamental_lag_months: 1
+  macro_lag_months: 1
+
+# Model Settings
+model:
+  type: random_forest
+  n_estimators: 500
+  max_depth: 12
+  max_features: 0.3
+  min_samples_leaf: 50
+
+# IBKR Connection
+ibkr:
+  host: "127.0.0.1"
+  paper_port: 7497
+  live_port: 7496
+  client_id: 1
+  pricing_model: tiered  # tiered or fixed
+
+# Output Settings
+output:
+  results_dir: results
+  reports_dir: reports
+  save_selections: true
+  generate_charts: true

@@ -86,6 +86,18 @@ def cli(verbose):
     default=BACKTEST_DEFAULTS["min_market_cap"],
     help="Minimum market cap filter",
 )
+@click.option(
+    "--rebalance-freq",
+    type=click.Choice(["A", "Q", "M"]),
+    default="A",
+    help="Rebalance frequency: A=annual, Q=quarterly, M=monthly",
+)
+@click.option(
+    "--rebalance-month",
+    type=int,
+    default=3,
+    help="Month for annual rebalancing (1-12, default 3=March)",
+)
 @click.option("--output", "-o", type=click.Path(), help="Output path for results")
 @click.option("--plot", is_flag=True, help="Generate charts")
 @click.option(
@@ -100,7 +112,7 @@ def cli(verbose):
     default="cap_weighted",
     help="Weighting for SimFin benchmark",
 )
-def backtest(data, rebuild_panel, simfin_dir, start, end, capital, stocks, min_cap, output, plot, benchmark_source, benchmark_weighting):
+def backtest(data, rebuild_panel, simfin_dir, start, end, capital, stocks, min_cap, rebalance_freq, rebalance_month, output, plot, benchmark_source, benchmark_weighting):
     """Run backtest simulation.
 
     Use --rebuild-panel to regenerate the panel from SimFin source files
@@ -159,8 +171,17 @@ def backtest(data, rebuild_panel, simfin_dir, start, end, capital, stocks, min_c
     else:
         end_date = datetime.strptime(end, "%Y-%m-%d")
 
+    # Format rebalance description
+    freq_names = {"A": "Annual", "Q": "Quarterly", "M": "Monthly"}
+    rebal_desc = freq_names.get(rebalance_freq, rebalance_freq)
+    if rebalance_freq == "A":
+        month_names = ["", "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                       "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+        rebal_desc += f" ({month_names[rebalance_month]} 15)"
+
     click.echo(f"\nData: {data}")
     click.echo(f"Period: {start_date.date()} to {end_date.date()}")
+    click.echo(f"Rebalancing: {rebal_desc}")
     click.echo(f"Capital: ${capital:,.0f}")
     click.echo(f"Stocks: {stocks}")
     click.echo(f"Min Cap: {min_cap}")
@@ -182,6 +203,8 @@ def backtest(data, rebuild_panel, simfin_dir, start, end, capital, stocks, min_c
         data=df,
         start_date=start_date,
         end_date=end_date,
+        rebalance_freq=rebalance_freq,
+        rebalance_month=rebalance_month,
         n_stocks=stocks,
         initial_capital=capital,
         min_market_cap=min_cap,

@@ -121,6 +121,7 @@ class BacktestEngine:
         start_date: datetime,
         end_date: datetime,
         rebalance_freq: str = "Q",
+        rebalance_month: int = 3,
         n_stocks: int = None,
         initial_capital: float = None,
         min_market_cap: str = None,
@@ -137,7 +138,8 @@ class BacktestEngine:
             data: Panel dataset with features and returns
             start_date: Backtest start date
             end_date: Backtest end date
-            rebalance_freq: 'Q' for quarterly, 'M' for monthly
+            rebalance_freq: 'A' for annual, 'Q' for quarterly, 'M' for monthly
+            rebalance_month: Month for annual rebalancing (1-12, default 3=March)
             n_stocks: Number of stocks per portfolio
             initial_capital: Starting capital for fee calculation
             min_market_cap: Minimum market cap filter
@@ -169,11 +171,20 @@ class BacktestEngine:
 
         # Generate rebalance dates
         rebalance_dates = self._get_rebalance_dates(
-            data, start_date, end_date, rebalance_freq
+            data, start_date, end_date, rebalance_freq, rebalance_month
         )
 
         if verbose:
-            logger.info(f"Backtest: {len(rebalance_dates)} periods from {start_date.date()} to {end_date.date()}")
+            freq_desc = {
+                "A": f"annual (month {rebalance_month})",
+                "Y": f"annual (month {rebalance_month})",
+                "Q": "quarterly",
+                "M": "monthly",
+            }.get(rebalance_freq, rebalance_freq)
+            logger.info(
+                f"Backtest: {len(rebalance_dates)} {freq_desc} periods "
+                f"from {start_date.date()} to {end_date.date()}"
+            )
 
         # Fetch yfinance benchmark data only if needed as fallback
         if benchmark_source == "yfinance":
@@ -281,11 +292,37 @@ class BacktestEngine:
         start: datetime,
         end: datetime,
         freq: str,
+        rebalance_month: int = 3,
     ) -> List[datetime]:
-        """Get rebalance dates based on frequency."""
+        """
+        Get rebalance dates based on frequency.
+
+        Args:
+            data: Panel data with public_date column
+            start: Start date
+            end: End date
+            freq: 'A' for annual, 'Q' for quarterly, 'M' for monthly
+            rebalance_month: Month for annual rebalancing (1-12, default March)
+
+        Returns:
+            List of rebalance dates
+        """
         all_dates = sorted(data["public_date"].unique())
 
-        if freq == "Q":
+        if freq == "A" or freq == "Y":
+            # Annual: specific month each year
+            dates = [
+                d for d in all_dates
+                if d.year >= start.year
+                and d.year <= end.year
+                and d.month == rebalance_month
+                and d >= start
+                and d <= end
+            ]
+            logger.info(
+                f"Annual rebalancing in month {rebalance_month}: {len(dates)} dates"
+            )
+        elif freq == "Q":
             # Quarterly: end of Mar, Jun, Sep, Dec
             dates = [
                 d for d in all_dates
@@ -299,7 +336,7 @@ class BacktestEngine:
             # Monthly
             dates = [d for d in all_dates if d >= start and d <= end]
         else:
-            raise ValueError(f"Unknown frequency: {freq}")
+            raise ValueError(f"Unknown frequency: {freq}. Use 'A', 'Q', or 'M'.")
 
         return dates
 
@@ -506,8 +543,14 @@ class BacktestEngine:
         cum_port = (1 + port_returns).cumprod()
         cum_bench = (1 + bench_returns).cumprod()
 
-        # Calculate metrics
-        periods_per_year = 4 if freq == "Q" else 12
+        # Calculate metrics - periods_per_year based on frequency
+        if freq in ("A", "Y"):
+            periods_per_year = 1
+        elif freq == "Q":
+            periods_per_year = 4
+        else:  # Monthly
+            periods_per_year = 12
+
         metrics = calculate_metrics(
             port_returns, bench_returns, periods_per_year=periods_per_year
         )

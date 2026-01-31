@@ -1,14 +1,14 @@
 # Long-Term Stock Selection System
 
-Production-grade stock selection and trading system based on the Wynne (2023) thesis methodology, with IBKR integration and Ireland tax tracking.
+ML-based stock selection system using Random Forest, based on Wynne (2023) thesis methodology.
 
 ## Features
 
-- **ML-based Stock Selection**: Random Forest model trained on 50+ years of fundamental data
-- **Point-in-Time Compliance**: Strict PIT data alignment to prevent lookahead bias
-- **IBKR Integration**: Paper and live trading via Interactive Brokers API
-- **Ireland Tax Tracking**: CGT calculation (33% rate, €1,270 exemption), dividend withholding credits
-- **Quarterly Rebalancing**: Semi-automated workflow with approval gates
+- **Random Forest Model**: Trained on 50+ fundamental ratios
+- **Point-in-Time Compliance**: Strict PIT alignment prevents lookahead bias
+- **Flexible Rebalancing**: Annual, quarterly, or monthly
+- **SimFin Data**: Builds panel from SimFin fundamental data
+- **Ireland Tax Tracking**: CGT calculation (33% rate, €1,270 exemption)
 
 ## Installation
 
@@ -16,75 +16,15 @@ Production-grade stock selection and trading system based on the Wynne (2023) th
 pip install -r requirements.txt
 ```
 
-For IBKR integration:
-```bash
-pip install ib_insync
-```
-
 ## Quick Start
 
-### Run Backtest
+### 1. Build Panel Dataset
+
 ```bash
-python -m src.cli backtest --data data/simfin_panel.csv --start 2018 --end 2024 --stocks 15
+python -m src.cli build-panel --simfin-dir data/simfin --output data/simfin_panel.csv
 ```
 
-### Paper Trading
-```bash
-python -m src.cli paper-trade --stocks 15 --dry-run
-```
-
-### Generate Tax Report
-```bash
-python -m src.cli tax-report --year 2024
-```
-
-### Check System Status
-```bash
-python -m src.cli status
-```
-
-## Project Structure
-
-```
-src/
-├── config.py              # Central configuration
-├── cli.py                 # Command-line interface
-├── models/
-│   ├── stock_selection_rf.py   # Random Forest model
-│   └── feature_engineering.py  # Feature calculations
-├── data/
-│   ├── simfin_loader.py        # SimFin data loading
-│   ├── panel_builder.py        # Panel construction
-│   └── cache_manager.py        # Data caching
-├── trading/
-│   ├── ibkr_client.py          # IBKR API wrapper
-│   ├── order_generator.py      # Order generation
-│   ├── fee_calculator.py       # IBKR fee calculations
-│   └── execution_engine.py     # Trade execution
-├── tax/
-│   ├── ireland_cgt.py          # Ireland CGT calculator
-│   ├── dividend_tracker.py     # Dividend tracking
-│   └── cost_basis.py           # FIFO cost basis
-├── backtest/
-│   ├── engine.py               # Backtest engine
-│   ├── metrics.py              # Performance metrics
-│   └── benchmark.py            # S&P 500 benchmark
-└── reports/
-    └── charts.py               # Visualization
-```
-
-## Configuration
-
-User settings in `config/settings.yaml`:
-- Portfolio size and rebalancing frequency
-- Tax jurisdiction settings
-- IBKR connection parameters
-
-Feature definitions in `config/features.yaml`.
-
-## Data Requirements
-
-SimFin data files in `data/simfin/`:
+Required SimFin files in `data/simfin/`:
 - `us-shareprices-daily.csv`
 - `us-income-quarterly.csv`
 - `us-balance-quarterly.csv`
@@ -92,10 +32,75 @@ SimFin data files in `data/simfin/`:
 - `us-companies.csv`
 - `industries.csv`
 
-Build the panel:
+### 2. Run Backtest
+
 ```bash
-python -m src.cli build-panel --add-macro
+# Annual rebalancing (recommended for 1-year returns)
+python -m src.cli backtest --start 2016 --end 2024 --rebalance-freq A --rebalance-month 3 --stocks 15
+
+# With output file
+python -m src.cli backtest --start 2016 --end 2024 -o results/backtest.csv
+
+# Rebuild panel before backtest
+python -m src.cli backtest --rebuild-panel --start 2016 --end 2024
 ```
+
+### 3. Other Commands
+
+```bash
+# Check system status
+python -m src.cli status
+
+# Validate panel data
+python -m src.cli validate-data
+
+# Generate tax report
+python -m src.cli tax-report --year 2024
+```
+
+## Project Structure
+
+```
+├── src/
+│   ├── cli.py                 # Command-line interface
+│   ├── config.py              # Central configuration
+│   ├── models/
+│   │   └── stock_selection_rf.py   # Random Forest model
+│   ├── data/
+│   │   ├── panel_builder.py        # Panel construction
+│   │   └── simfin_loader.py        # SimFin data loading
+│   ├── backtest/
+│   │   ├── engine.py               # Backtest engine
+│   │   └── metrics.py              # Performance metrics
+│   ├── trading/
+│   │   └── fee_calculator.py       # IBKR fee calculations
+│   └── tax/
+│       └── ireland_cgt.py          # Ireland CGT calculator
+├── config/
+│   ├── settings.yaml          # User settings
+│   └── features.yaml          # Feature definitions
+├── data/
+│   └── simfin/                # SimFin source CSVs
+├── tests/                     # Unit tests
+└── docs/                      # Documentation
+```
+
+## CLI Options
+
+### backtest
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--data` | data/simfin_panel.csv | Panel dataset path |
+| `--rebuild-panel` | false | Rebuild panel before backtest |
+| `--start` | 2018 | Start year |
+| `--end` | 2024 | End year |
+| `--rebalance-freq` | A | A=annual, Q=quarterly, M=monthly |
+| `--rebalance-month` | 3 | Month for annual rebalancing (1-12) |
+| `--stocks` | 15 | Portfolio size |
+| `--min-cap` | Mid Cap | Minimum market cap filter |
+| `--benchmark-source` | simfin | simfin or yfinance |
+| `--output` | - | Save results to CSV |
 
 ## Testing
 

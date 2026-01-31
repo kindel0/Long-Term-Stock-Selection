@@ -405,9 +405,17 @@ class BacktestEngine:
         selected_indices = top_stocks.index
         selected_tickers = top_stocks["TICKER"].tolist() if "TICKER" in top_stocks.columns else []
 
-        # Get actual returns
-        actual_returns = y_test.loc[selected_indices].dropna()
-        portfolio_return = actual_returns.mean() if len(actual_returns) > 0 else 0.0
+        # Get actual returns - create ticker-to-return mapping
+        actual_returns_series = y_test.loc[selected_indices]
+        portfolio_return = actual_returns_series.dropna().mean() if len(actual_returns_series.dropna()) > 0 else 0.0
+
+        # Map ticker to actual return
+        actual_returns_dict = {}
+        for idx, ticker in zip(selected_indices, selected_tickers):
+            if idx in y_test.index:
+                ret = y_test.loc[idx]
+                if pd.notna(ret):
+                    actual_returns_dict[ticker] = float(ret)
 
         # Get benchmark return - prefer SimFin data
         benchmark_return = self._calculate_benchmark_return(
@@ -433,10 +441,10 @@ class BacktestEngine:
             date=test_date,
             portfolio_return=portfolio_return,
             benchmark_return=benchmark_return,
-            n_stocks=len(actual_returns),
+            n_stocks=len(actual_returns_dict),
             selected_stocks=selected_tickers,
             predictions=dict(zip(selected_tickers, top_stocks["predicted_rank"].tolist())),
-            actual_returns=actual_returns.to_dict(),
+            actual_returns=actual_returns_dict,
             fees_paid=fees_paid,
             turnover=turnover,
         )

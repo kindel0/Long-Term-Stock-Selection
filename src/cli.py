@@ -117,11 +117,19 @@ def backtest(data, rebuild_panel, simfin_dir, start, end, capital, stocks, min_c
 
     Use --rebuild-panel to regenerate the panel from SimFin source files
     before running the backtest. This ensures you're using the latest data.
+
+    Generates a comprehensive report in results/backtest_TIMESTAMP/ with:
+    - config.json: All parameters used
+    - summary.json: Performance metrics
+    - periods.csv: Period-by-period results
+    - selections.csv: Stock selections with individual returns
+    - charts/*.png: Visualization charts
+    - report.html: HTML summary report
+    - backtest.log: Execution log
     """
     from pathlib import Path
     from .models.stock_selection_rf import StockSelectionRF
     from .backtest.engine import BacktestEngine
-    from .reports.charts import ChartGenerator
 
     click.echo("=" * 60)
     click.echo("RUNNING BACKTEST")
@@ -213,20 +221,53 @@ def backtest(data, rebuild_panel, simfin_dir, start, end, capital, stocks, min_c
         benchmark_weighting=benchmark_weighting,
     )
 
-    # Print results
-    engine.print_summary(result)
+    # Generate comprehensive report
+    from .reports.backtest_report import BacktestReporter
 
-    # Generate charts
-    if plot:
-        click.echo("\nGenerating charts...")
-        charts = ChartGenerator()
-        charts.generate_all(result, show=True)
-
-    # Save results
+    # Determine output directory
     if output:
-        result_df = result.to_dataframe()
-        result_df.to_csv(output, index=False)
-        click.echo(f"\nSaved results: {output}")
+        report_dir = Path(output).parent / Path(output).stem
+    else:
+        report_dir = None  # Will use timestamped default
+
+    reporter = BacktestReporter(output_dir=report_dir)
+
+    # Build config dict for report
+    config = {
+        "data_path": data,
+        "start_date": start_date.strftime("%Y-%m-%d"),
+        "end_date": end_date.strftime("%Y-%m-%d"),
+        "rebalance_freq": rebalance_freq,
+        "rebalance_month": rebalance_month,
+        "n_stocks": stocks,
+        "initial_capital": capital,
+        "min_market_cap": min_cap,
+        "target_col": "1yr_return",
+        "benchmark_source": benchmark_source,
+        "benchmark_weighting": benchmark_weighting,
+    }
+
+    # Generate report
+    outputs = reporter.generate_report(result, config)
+
+    # Print summary to console
+    reporter.print_summary(result)
+
+    # Show charts interactively if requested
+    if plot:
+        click.echo("\nDisplaying charts...")
+        try:
+            import matplotlib.pyplot as plt
+            for chart_path in outputs.get("charts", []):
+                img = plt.imread(chart_path)
+                fig, ax = plt.subplots(figsize=(12, 8))
+                ax.imshow(img)
+                ax.axis("off")
+                plt.show()
+        except Exception as e:
+            click.echo(f"Could not display charts: {e}")
+
+    click.echo(f"\nReport saved to: {reporter.output_dir}")
 
 
 @cli.command()

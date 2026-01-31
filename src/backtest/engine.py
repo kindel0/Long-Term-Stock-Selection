@@ -127,6 +127,8 @@ class BacktestEngine:
         target_col: str = "3mo_return",
         simulate_fees: bool = True,
         verbose: bool = True,
+        benchmark_source: str = "simfin",
+        benchmark_weighting: str = "cap_weighted",
     ) -> BacktestResult:
         """
         Run backtest with strict PIT.
@@ -142,6 +144,10 @@ class BacktestEngine:
             target_col: Column with forward returns
             simulate_fees: Whether to simulate trading fees
             verbose: Print progress
+            benchmark_source: 'simfin' (default) or 'yfinance'. SimFin uses
+                             panel data; yfinance fetches S&P 500.
+            benchmark_weighting: 'cap_weighted' (default) or 'equal_weighted'
+                                for SimFin benchmark.
 
         Returns:
             BacktestResult with all metrics and period details
@@ -169,8 +175,13 @@ class BacktestEngine:
         if verbose:
             logger.info(f"Backtest: {len(rebalance_dates)} periods from {start_date.date()} to {end_date.date()}")
 
-        # Fetch benchmark data
-        self.benchmark.fetch_data(start_date, end_date)
+        # Fetch yfinance benchmark data only if needed as fallback
+        if benchmark_source == "yfinance":
+            self.benchmark.fetch_data(start_date, end_date)
+
+        # Store benchmark settings
+        self._benchmark_source = benchmark_source
+        self._benchmark_weighting = benchmark_weighting
 
         # Run backtest
         periods = []
@@ -310,10 +321,20 @@ class BacktestEngine:
         train_df = data[train_mask].copy()
         test_df = data[test_mask].copy()
 
+        # Count stocks with valid forward returns
+        n_valid_returns = test_df[target_col].notna().sum()
+
         if len(train_df) < 500 or len(test_df) < n_stocks:
             logger.warning(
                 f"Insufficient data for {test_date.date()}: "
                 f"train={len(train_df)}, test={len(test_df)}"
+            )
+            return None
+
+        if n_valid_returns < n_stocks:
+            logger.warning(
+                f"Insufficient forward returns for {test_date.date()}: "
+                f"only {n_valid_returns} stocks have valid {target_col}"
             )
             return None
 
@@ -351,15 +372,10 @@ class BacktestEngine:
         actual_returns = y_test.loc[selected_indices].dropna()
         portfolio_return = actual_returns.mean() if len(actual_returns) > 0 else 0.0
 
-        # Get benchmark return (match holding period to target)
-        if target_col == "1yr_return":
-            holding_months = 12
-        else:
-            holding_months = 3
-        end_date = test_date + pd.DateOffset(months=holding_months)
-        benchmark_return = self.benchmark.get_return(test_date, end_date)
-        if benchmark_return is None:
-            benchmark_return = y_test.mean()  # Fallback to universe average
+        # Get benchmark return - prefer SimFin data
+        benchmark_return = self._calculate_benchmark_return(
+            test_df, y_test, target_col
+        )
 
         # Calculate turnover
         current_holdings = set(selected_tickers)
@@ -387,6 +403,84 @@ class BacktestEngine:
             fees_paid=fees_paid,
             turnover=turnover,
         )
+
+    def _calculate_benchmark_return(
+        self,
+        test_df: pd.DataFrame,
+        y_test: pd.Series,
+        target_col: str,
+    ) -> float:
+        """
+        Calculate benchmark return from SimFin data or yfinance fallback.
+
+        Priority:
+        1. SimFin data (cap-weighted or equal-weighted based on settings)
+        2. yfinance S&P 500 (only if benchmark_source='yfinance' or SimFin fails)
+
+        Args:
+            test_df: Test period data with MthCap column
+            y_test: Forward returns for the period
+            target_col: Target column name (for holding period)
+
+        Returns:
+            Benchmark return as decimal
+        """
+        benchmark_source = getattr(self, "_benchmark_source", "simfin")
+        benchmark_weighting = getattr(self, "_benchmark_weighting", "cap_weighted")
+
+        # Try SimFin-based benchmark first (unless yfinance explicitly requested)
+        if benchmark_source == "simfin":
+            valid_returns = y_test.dropna()
+
+            if len(valid_returns) > 0:
+                if benchmark_weighting == "cap_weighted" and "MthCap" in test_df.columns:
+                    # Cap-weighted average
+                    weights = test_df.loc[valid_returns.index, "MthCap"]
+                    weights = weights.fillna(0)
+                    total_weight = weights.sum()
+
+                    if total_weight > 0:
+                        benchmark_return = (valid_returns * weights).sum() / total_weight
+                        logger.debug(
+                            f"SimFin cap-weighted benchmark: {benchmark_return:.4f} "
+                            f"({len(valid_returns)} stocks)"
+                        )
+                        return benchmark_return
+
+                # Equal-weighted fallback
+                benchmark_return = valid_returns.mean()
+                logger.debug(
+                    f"SimFin equal-weighted benchmark: {benchmark_return:.4f} "
+                    f"({len(valid_returns)} stocks)"
+                )
+                return benchmark_return
+
+        # yfinance fallback (S&P 500)
+        if target_col == "1yr_return":
+            holding_months = 12
+        else:
+            holding_months = 3
+
+        test_date = test_df["public_date"].iloc[0] if len(test_df) > 0 else None
+        if test_date is not None:
+            end_date = test_date + pd.DateOffset(months=holding_months)
+            benchmark_return = self.benchmark.get_return(test_date, end_date)
+
+            if benchmark_return is not None:
+                logger.debug(f"yfinance S&P 500 benchmark: {benchmark_return:.4f}")
+                return benchmark_return
+
+        # Final fallback: equal-weighted SimFin
+        valid_returns = y_test.dropna()
+        if len(valid_returns) > 0:
+            benchmark_return = valid_returns.mean()
+            logger.warning(
+                f"Using equal-weighted fallback benchmark: {benchmark_return:.4f}"
+            )
+            return benchmark_return
+
+        logger.warning("No benchmark data available, returning 0")
+        return 0.0
 
     def _compile_results(
         self, periods: List[PeriodResult], freq: str

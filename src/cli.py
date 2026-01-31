@@ -77,7 +77,19 @@ def cli(verbose):
 )
 @click.option("--output", "-o", type=click.Path(), help="Output path for results")
 @click.option("--plot", is_flag=True, help="Generate charts")
-def backtest(data, start, end, capital, stocks, min_cap, output, plot):
+@click.option(
+    "--benchmark-source",
+    type=click.Choice(["simfin", "yfinance"]),
+    default="simfin",
+    help="Benchmark data source (simfin=universe, yfinance=S&P500)",
+)
+@click.option(
+    "--benchmark-weighting",
+    type=click.Choice(["cap_weighted", "equal_weighted"]),
+    default="cap_weighted",
+    help="Weighting for SimFin benchmark",
+)
+def backtest(data, start, end, capital, stocks, min_cap, output, plot, benchmark_source, benchmark_weighting):
     """Run backtest simulation."""
     from .models.stock_selection_rf import StockSelectionRF
     from .backtest.engine import BacktestEngine
@@ -103,6 +115,7 @@ def backtest(data, start, end, capital, stocks, min_cap, output, plot):
     click.echo(f"Capital: ${capital:,.0f}")
     click.echo(f"Stocks: {stocks}")
     click.echo(f"Min Cap: {min_cap}")
+    click.echo(f"Benchmark: {benchmark_source} ({benchmark_weighting})")
 
     # Load data
     click.echo("\nLoading data...")
@@ -124,6 +137,8 @@ def backtest(data, start, end, capital, stocks, min_cap, output, plot):
         initial_capital=capital,
         min_market_cap=min_cap,
         target_col="1yr_return",
+        benchmark_source=benchmark_source,
+        benchmark_weighting=benchmark_weighting,
     )
 
     # Print results

@@ -22,6 +22,7 @@ from .metrics import PerformanceMetrics, calculate_metrics
 from ..config import (
     BACKTEST_DEFAULTS,
     MARKET_CAP_HIERARCHY,
+    REBALANCE_TO_TARGET,
     RESULTS_DIR,
 )
 
@@ -130,7 +131,7 @@ class BacktestEngine:
         n_stocks: int = None,
         initial_capital: float = None,
         min_market_cap: str = None,
-        target_col: str = "3mo_return",
+        target_col: str = None,  # Auto-select based on rebalance_freq if None
         simulate_fees: bool = True,
         verbose: bool = True,
         benchmark_source: str = "simfin",
@@ -163,6 +164,13 @@ class BacktestEngine:
         n_stocks = n_stocks or BACKTEST_DEFAULTS["n_stocks"]
         initial_capital = initial_capital or BACKTEST_DEFAULTS["initial_capital"]
         min_market_cap = min_market_cap or BACKTEST_DEFAULTS["min_market_cap"]
+
+        # Auto-select target column based on rebalance frequency if not specified
+        if target_col is None:
+            target_col = REBALANCE_TO_TARGET.get(rebalance_freq, "1yr_return")
+            logger.info(
+                f"Auto-selected target '{target_col}' for {rebalance_freq} rebalancing"
+            )
 
         # Prepare data
         data = self._prepare_data(data, target_col)
@@ -239,14 +247,17 @@ class BacktestEngine:
         data = data.sort_values(["TICKER", "public_date"])
 
         # Ensure outcome_date exists for PIT filtering
+        # Map target column to months forward
+        target_to_months = {
+            "1mo_return": 1,
+            "3mo_return": 3,
+            "6mo_return": 6,
+            "1yr_return": 12,
+        }
+        months_forward = target_to_months.get(target_col, 3)
+
         if "outcome_date" not in data.columns:
-            if target_col == "3mo_return":
-                data["outcome_date"] = data["public_date"] + pd.DateOffset(months=3)
-            elif target_col == "1yr_return":
-                data["outcome_date"] = data["public_date"] + pd.DateOffset(months=12)
-            else:
-                # Default to 3 months
-                data["outcome_date"] = data["public_date"] + pd.DateOffset(months=3)
+            data["outcome_date"] = data["public_date"] + pd.DateOffset(months=months_forward)
 
         return data
 

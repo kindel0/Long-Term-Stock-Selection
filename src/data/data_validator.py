@@ -223,8 +223,16 @@ class DataValidator:
         # Check that returns align with expected holding period
         if return_col in df.columns and outcome_col in df.columns:
             holding_days = (df[outcome_col] - df[date_col]).dt.days
-            expected = 365  # 1 year for 1yr_return
-            tolerance = 30
+
+            # Map return column to expected days
+            expected_days = {
+                "1mo_return": 30,
+                "3mo_return": 91,
+                "6mo_return": 182,
+                "1yr_return": 365,
+            }
+            expected = expected_days.get(return_col, 365)
+            tolerance = 15 if expected <= 91 else 30
 
             outliers = (
                 (holding_days < expected - tolerance)
@@ -233,7 +241,7 @@ class DataValidator:
             if outliers > len(df) * 0.1:
                 issues.append(
                     f"{outliers} rows have unexpected holding period "
-                    f"(not near {expected} days)"
+                    f"(not near {expected} days for {return_col})"
                 )
 
         is_compliant = len(issues) == 0

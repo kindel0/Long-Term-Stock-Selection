@@ -266,6 +266,16 @@ BACKTEST_DEFAULTS: Dict[str, Any] = {
     "end_year": 2024,
 }
 
+# Map rebalancing frequency to appropriate training target
+# Train on returns matching the holding period
+REBALANCE_TO_TARGET: Dict[str, str] = {
+    "M": "1mo_return",    # Monthly rebalancing → 1-month forward return
+    "Q": "3mo_return",    # Quarterly rebalancing → 3-month forward return
+    "S": "6mo_return",    # Semi-annual rebalancing → 6-month forward return
+    "A": "1yr_return",    # Annual rebalancing → 1-year forward return
+    "Y": "1yr_return",    # Alias for annual
+}
+
 # Portfolio size options
 PORTFOLIO_SIZES: List[int] = [10, 15, 20, 30, 50]
 

@@ -21,6 +21,7 @@ from .config import (
     DEFAULT_PANEL_PATH,
     BACKTEST_DEFAULTS,
     PROJECT_ROOT,
+    REBALANCE_TO_TARGET,
 )
 
 # Setup logging
@@ -218,7 +219,7 @@ def backtest(data, rebuild_panel, simfin_dir, start, end, capital, stocks, min_c
     model = StockSelectionRF(algorithm=algorithm, roe_weight=roe_weight)
     engine = BacktestEngine(model)
 
-    # Run backtest
+    # Run backtest (target_col auto-selected based on rebalance_freq)
     click.echo("\nRunning backtest...")
     result = engine.run(
         data=df,
@@ -229,7 +230,7 @@ def backtest(data, rebuild_panel, simfin_dir, start, end, capital, stocks, min_c
         n_stocks=stocks,
         initial_capital=capital,
         min_market_cap=min_cap,
-        target_col="1yr_return",
+        # target_col auto-selected: M→1mo, Q→3mo, S→6mo, A→1yr
         benchmark_source=benchmark_source,
         benchmark_weighting=benchmark_weighting,
     )
@@ -246,6 +247,8 @@ def backtest(data, rebuild_panel, simfin_dir, start, end, capital, stocks, min_c
     reporter = BacktestReporter(output_dir=report_dir)
 
     # Build config dict for report
+    # Get the target column that was auto-selected
+    target_col = REBALANCE_TO_TARGET.get(rebalance_freq, "1yr_return")
     config = {
         "data_path": data,
         "start_date": start_date.strftime("%Y-%m-%d"),
@@ -255,7 +258,7 @@ def backtest(data, rebuild_panel, simfin_dir, start, end, capital, stocks, min_c
         "n_stocks": stocks,
         "initial_capital": capital,
         "min_market_cap": min_cap,
-        "target_col": "1yr_return",
+        "target_col": target_col,
         "benchmark_source": benchmark_source,
         "benchmark_weighting": benchmark_weighting,
         "algorithm": algorithm,
@@ -327,7 +330,12 @@ def paper_trade(data, stocks, dry_run):
     train_df = df[df["public_date"] <= train_end].copy()
 
     X_train = train_df[feature_cols]
-    y_train = train_df["1yr_return"] if "1yr_return" in train_df.columns else train_df["3mo_return"]
+    # Use best available return column (prefer longer horizon for training)
+    return_cols = ["1yr_return", "6mo_return", "3mo_return", "1mo_return"]
+    target_col = next((c for c in return_cols if c in train_df.columns), None)
+    if target_col is None:
+        raise click.ClickException("No return column found in data")
+    y_train = train_df[target_col]
     meta_train = train_df[["sector", "public_date", "TICKER"]]
 
     model.train(X_train, y_train, meta_train)

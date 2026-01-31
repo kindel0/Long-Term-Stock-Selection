@@ -124,25 +124,33 @@ class PanelBuilder:
             m["MthPrc"] > 0, m["Div_ttm"].fillna(0.0) / m["MthPrc"], np.nan
         )
 
-        # Calculate 1-year forward return via date matching
-        logger.info("Calculating 1-year returns via date matching...")
-        future = m[["Ticker", "public_date", "MthPrc"]].copy()
-        future["match_date"] = future["public_date"] - pd.DateOffset(years=1)
-        future["match_date"] = future["match_date"] + pd.offsets.MonthEnd(0)
+        # Calculate forward returns for multiple horizons
+        return_horizons = {
+            "1mo_return": 1,
+            "3mo_return": 3,
+            "6mo_return": 6,
+            "1yr_return": 12,
+        }
 
-        m = m.merge(
-            future[["Ticker", "match_date", "MthPrc"]],
-            left_on=["Ticker", "public_date"],
-            right_on=["Ticker", "match_date"],
-            how="left",
-            suffixes=("", "_future"),
-        )
+        for return_col, months in return_horizons.items():
+            logger.info(f"Calculating {return_col} ({months} months forward)...")
+            future = m[["Ticker", "public_date", "MthPrc"]].copy()
+            future["match_date"] = future["public_date"] - pd.DateOffset(months=months)
+            future["match_date"] = future["match_date"] + pd.offsets.MonthEnd(0)
 
-        m["1yr_return"] = (m["MthPrc_future"] - m["MthPrc"]) / (m["MthPrc"] + EPS)
-        m.loc[m["MthPrc"] <= 0, "1yr_return"] = np.nan
+            m = m.merge(
+                future[["Ticker", "match_date", "MthPrc"]],
+                left_on=["Ticker", "public_date"],
+                right_on=["Ticker", "match_date"],
+                how="left",
+                suffixes=("", "_future"),
+            )
 
-        # Clean up
-        m = m.drop(columns=["MthPrc_future", "match_date"], errors="ignore")
+            m[return_col] = (m["MthPrc_future"] - m["MthPrc"]) / (m["MthPrc"] + EPS)
+            m.loc[m["MthPrc"] <= 0, return_col] = np.nan
+
+            # Clean up merge columns for next iteration
+            m = m.drop(columns=["MthPrc_future", "match_date"], errors="ignore")
         m = m.rename(columns={"Ticker": "TICKER", "SimFinId": "gvkey"})
 
         logger.info(
@@ -509,11 +517,14 @@ class PanelBuilder:
         # Positive book equity
         panel = panel[panel["Total Equity"] > QUALITY_FILTERS["min_book_equity"]]
 
-        # Valid returns
+        # Valid returns - apply bounds to all return columns
         low, high = QUALITY_FILTERS["return_bounds"]
-        panel = panel[
-            (panel["1yr_return"].between(low, high)) | (panel["1yr_return"].isna())
-        ]
+        return_cols = ["1mo_return", "3mo_return", "6mo_return", "1yr_return"]
+        for col in return_cols:
+            if col in panel.columns:
+                panel = panel[
+                    (panel[col].between(low, high)) | (panel[col].isna())
+                ]
 
         # Positive revenue
         if "Revenue_ttm" in panel.columns:
@@ -676,8 +687,11 @@ class PanelBuilder:
         # Add sector info
         panel = self.add_sector_info(panel)
 
-        # Clean target
-        panel["1yr_return"] = panel["1yr_return"].replace([np.inf, -np.inf], np.nan)
+        # Clean return columns
+        return_cols = ["1mo_return", "3mo_return", "6mo_return", "1yr_return"]
+        for col in return_cols:
+            if col in panel.columns:
+                panel[col] = panel[col].replace([np.inf, -np.inf], np.nan)
 
         # Quality filters
         if apply_filters:

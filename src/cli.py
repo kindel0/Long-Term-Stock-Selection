@@ -291,12 +291,14 @@ def backtest(data, rebuild_panel, simfin_dir, start, end, capital, stocks, min_c
 @cli.command()
 @click.option("--data", "-d", type=click.Path(exists=True), help="Path to panel data")
 @click.option("--stocks", "-n", type=int, default=15, help="Number of stocks")
+@click.option("--capital", type=float, default=None,
+              help="Account value override (default: fetch from IBKR or $30K)")
 @click.option("--dry-run", is_flag=True, help="Show orders without executing")
 @click.option("--algorithm", type=click.Choice(["ridge", "rf"]), default="ridge",
               help="ML algorithm: ridge (recommended) or rf")
 @click.option("--roe-weight", type=float, default=0.5,
               help="Weight for ROE factor (0-1)")
-def paper_trade(data, stocks, dry_run, algorithm, roe_weight):
+def paper_trade(data, stocks, capital, dry_run, algorithm, roe_weight):
     """Run paper trading mode with IBKR connection."""
     from .models.stock_selection_rf import StockSelectionRF
     from .trading.order_generator import OrderGenerator
@@ -333,7 +335,11 @@ def paper_trade(data, stocks, dry_run, algorithm, roe_weight):
         account_summary = ibkr.get_account_summary()
         current_positions = ibkr.get_positions()
 
-        if account_summary:
+        if capital:
+            # Use override value
+            account_value = capital
+            click.echo(f"\nUsing specified capital: ${account_value:,.2f}")
+        elif account_summary:
             click.echo(f"\nAccount Value: ${account_summary.net_liquidation:,.2f}")
             click.echo(f"Cash Available: ${account_summary.total_cash:,.2f}")
             account_value = account_summary.net_liquidation
@@ -349,7 +355,7 @@ def paper_trade(data, stocks, dry_run, algorithm, roe_weight):
             click.echo("\nNo current positions")
             current_positions = pd.DataFrame()
     else:
-        account_value = 30000
+        account_value = capital or 30000
         current_positions = pd.DataFrame()
 
     # Load panel data

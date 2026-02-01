@@ -298,7 +298,6 @@ def backtest(data, rebuild_panel, simfin_dir, start, end, capital, stocks, min_c
               help="Weight for ROE factor (0-1)")
 def paper_trade(data, stocks, dry_run, algorithm, roe_weight):
     """Run paper trading mode with IBKR connection."""
-    import asyncio
     from .models.stock_selection_rf import StockSelectionRF
     from .trading.order_generator import OrderGenerator
     from .trading.execution_engine import ExecutionEngine, ExecutionMode
@@ -314,23 +313,14 @@ def paper_trade(data, stocks, dry_run, algorithm, roe_weight):
     # Connect to IBKR
     click.echo("\nConnecting to IBKR (paper account)...")
     ibkr = IBKRClient(mode="paper")
-
-    async def connect_ibkr():
-        return await ibkr.connect()
-
-    try:
-        loop = asyncio.get_event_loop()
-    except RuntimeError:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-
-    connected = loop.run_until_complete(connect_ibkr())
+    connected = ibkr.connect()
 
     if not connected:
         click.echo("ERROR: Could not connect to IBKR.")
         click.echo("Make sure TWS or IB Gateway is running with API enabled.")
         click.echo("  - TWS: File > Global Configuration > API > Settings")
         click.echo("  - Enable 'Enable ActiveX and Socket Clients'")
+        click.echo("  - UNCHECK 'Read-Only API' to allow trading")
         click.echo("  - Paper trading port should be 7497")
         if dry_run:
             click.echo("\nContinuing in dry-run mode without IBKR...")
@@ -340,12 +330,8 @@ def paper_trade(data, stocks, dry_run, algorithm, roe_weight):
 
     # Get account info and positions from IBKR
     if ibkr and ibkr.is_connected:
-        async def get_account_data():
-            summary = await ibkr.get_account_summary()
-            positions = await ibkr.get_positions()
-            return summary, positions
-
-        account_summary, current_positions = loop.run_until_complete(get_account_data())
+        account_summary = ibkr.get_account_summary()
+        current_positions = ibkr.get_positions()
 
         if account_summary:
             click.echo(f"\nAccount Value: ${account_summary.net_liquidation:,.2f}")
@@ -421,11 +407,7 @@ def paper_trade(data, stocks, dry_run, algorithm, roe_weight):
 
     if ibkr and ibkr.is_connected:
         click.echo(f"\nFetching prices for {len(all_symbols)} symbols...")
-
-        async def fetch_prices():
-            return await ibkr.get_prices(all_symbols)
-
-        prices = loop.run_until_complete(fetch_prices())
+        prices = ibkr.get_prices(all_symbols)
         click.echo(f"  Got prices for {len(prices)} symbols")
 
         # Fill missing with panel prices if available
@@ -434,8 +416,9 @@ def paper_trade(data, stocks, dry_run, algorithm, roe_weight):
                 panel_price = test_df.loc[test_df["TICKER"] == symbol, "MthPrc"]
                 if not panel_price.empty:
                     prices[symbol] = panel_price.iloc[0]
+                    click.echo(f"  Using panel price for {symbol}: ${prices[symbol]:.2f}")
                 else:
-                    prices[symbol] = 100.0  # Fallback
+                    prices[symbol] = 100.0
     else:
         # Use panel prices
         prices = {}
@@ -458,7 +441,7 @@ def paper_trade(data, stocks, dry_run, algorithm, roe_weight):
     if not orders:
         click.echo("\nNo orders needed - portfolio is already at target.")
         if ibkr and ibkr.is_connected:
-            loop.run_until_complete(ibkr.disconnect())
+            ibkr.disconnect()
         return
 
     # Execute
@@ -476,7 +459,7 @@ def paper_trade(data, stocks, dry_run, algorithm, roe_weight):
 
     # Disconnect
     if ibkr and ibkr.is_connected:
-        loop.run_until_complete(ibkr.disconnect())
+        ibkr.disconnect()
         click.echo("\nDisconnected from IBKR")
 
 
@@ -490,7 +473,6 @@ def paper_trade(data, stocks, dry_run, algorithm, roe_weight):
               help="Weight for ROE factor (0-1)")
 def live_trade(data, stocks, confirm, algorithm, roe_weight):
     """Run live trading mode (requires --confirm flag)."""
-    import asyncio
     from .models.stock_selection_rf import StockSelectionRF
     from .trading.order_generator import OrderGenerator
     from .trading.execution_engine import ExecutionEngine, ExecutionMode
@@ -511,31 +493,18 @@ def live_trade(data, stocks, confirm, algorithm, roe_weight):
     # Connect to IBKR LIVE
     click.echo("Connecting to IBKR (LIVE account)...")
     ibkr = IBKRClient(mode="live")
-
-    try:
-        loop = asyncio.get_event_loop()
-    except RuntimeError:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-
-    async def connect_ibkr():
-        return await ibkr.connect()
-
-    connected = loop.run_until_complete(connect_ibkr())
+    connected = ibkr.connect()
 
     if not connected:
         click.echo("ERROR: Could not connect to IBKR live account.")
         click.echo("Make sure TWS or IB Gateway is running with API enabled.")
+        click.echo("  - UNCHECK 'Read-Only API' to allow trading")
         click.echo("  - Live trading port should be 7496")
         sys.exit(1)
 
     # Get account info
-    async def get_account_data():
-        summary = await ibkr.get_account_summary()
-        positions = await ibkr.get_positions()
-        return summary, positions
-
-    account_summary, current_positions = loop.run_until_complete(get_account_data())
+    account_summary = ibkr.get_account_summary()
+    current_positions = ibkr.get_positions()
 
     if account_summary:
         click.echo(f"\nAccount Value: ${account_summary.net_liquidation:,.2f}")
@@ -543,7 +512,7 @@ def live_trade(data, stocks, confirm, algorithm, roe_weight):
         account_value = account_summary.net_liquidation
     else:
         click.echo("ERROR: Could not get account summary")
-        loop.run_until_complete(ibkr.disconnect())
+        ibkr.disconnect()
         sys.exit(1)
 
     if not current_positions.empty:
@@ -607,11 +576,7 @@ def live_trade(data, stocks, confirm, algorithm, roe_weight):
     all_symbols = list(set(target_symbols + current_symbols))
 
     click.echo(f"\nFetching prices for {len(all_symbols)} symbols...")
-
-    async def fetch_prices():
-        return await ibkr.get_prices(all_symbols)
-
-    prices = loop.run_until_complete(fetch_prices())
+    prices = ibkr.get_prices(all_symbols)
     click.echo(f"  Got prices for {len(prices)} symbols")
 
     # Fill missing
@@ -620,6 +585,7 @@ def live_trade(data, stocks, confirm, algorithm, roe_weight):
             panel_price = test_df.loc[test_df["TICKER"] == symbol, "MthPrc"]
             if not panel_price.empty:
                 prices[symbol] = panel_price.iloc[0]
+                click.echo(f"  Using panel price for {symbol}: ${prices[symbol]:.2f}")
             else:
                 click.echo(f"  WARNING: No price for {symbol}, skipping")
 
@@ -634,7 +600,7 @@ def live_trade(data, stocks, confirm, algorithm, roe_weight):
 
     if not orders:
         click.echo("\nNo orders needed - portfolio is already at target.")
-        loop.run_until_complete(ibkr.disconnect())
+        ibkr.disconnect()
         return
 
     # Execute
@@ -654,7 +620,7 @@ def live_trade(data, stocks, confirm, algorithm, roe_weight):
         click.echo("Execution cancelled")
 
     # Disconnect
-    loop.run_until_complete(ibkr.disconnect())
+    ibkr.disconnect()
     click.echo("\nDisconnected from IBKR")
 
 

@@ -257,34 +257,28 @@ class ExecutionEngine:
         return self._execute_via_ibkr()
 
     def _execute_via_ibkr(self) -> List[ExecutedOrder]:
-        """Execute orders through IBKR API."""
-        import asyncio
+        """Execute orders through IBKR API (synchronous)."""
+        results = []
 
-        async def execute_all():
-            results = []
+        # Execute sells first to free up cash
+        sells = [o for o in self.pending_orders if o.action == "SELL"]
+        buys = [o for o in self.pending_orders if o.action == "BUY"]
 
-            # Execute sells first to free up cash
-            sells = [o for o in self.pending_orders if o.action == "SELL"]
-            buys = [o for o in self.pending_orders if o.action == "BUY"]
+        for order in sells + buys:
+            try:
+                logger.info(f"Placing {order.action} order: {order.quantity} {order.symbol}")
 
-            for order in sells + buys:
-                try:
-                    logger.info(f"Placing {order.action} order: {order.quantity} {order.symbol}")
+                order_id = self.ibkr.place_market_order(
+                    symbol=order.symbol,
+                    quantity=order.quantity,
+                    action=order.action,
+                )
 
-                    order_id = await self.ibkr.place_market_order(
-                        symbol=order.symbol,
-                        quantity=order.quantity,
-                        action=order.action,
-                    )
+                if order_id:
+                    # Wait for fill
+                    fill_price = self.ibkr.wait_for_fill(order_id, timeout=30)
 
-                    if order_id:
-                        # Wait briefly for fill
-                        await asyncio.sleep(2)
-
-                        # Get fill price (approximate - would need order status check for exact)
-                        fill_price = await self.ibkr.get_current_price(order.symbol)
-                        fill_price = fill_price or order.estimated_price
-
+                    if fill_price:
                         executed = ExecutedOrder(
                             symbol=order.symbol,
                             action=order.action,
@@ -297,37 +291,35 @@ class ExecutionEngine:
                             executed_at=datetime.now().isoformat(),
                             notes=f"IBKR {self.mode.value} execution",
                         )
-                        results.append(executed)
-
-                        # Update position manager
-                        if order.action == "BUY":
-                            self.positions.add_position(
-                                order.symbol, order.quantity, fill_price
-                            )
-                        else:
-                            self.positions.reduce_position(
-                                order.symbol, order.quantity, fill_price
-                            )
-
                         logger.info(f"  Filled: {order.symbol} @ ${fill_price:.2f}")
                     else:
+                        # Order submitted but not filled yet
                         executed = ExecutedOrder(
                             symbol=order.symbol,
                             action=order.action,
                             quantity=order.quantity,
                             price=order.estimated_price,
-                            fill_price=0,
-                            fee=0,
-                            status="rejected",
-                            order_id="",
+                            fill_price=order.estimated_price,  # Use estimate
+                            fee=order.estimated_fee,
+                            status="submitted",
+                            order_id=order_id,
                             executed_at=datetime.now().isoformat(),
-                            notes="Order placement failed",
+                            notes="Order submitted, fill pending",
                         )
-                        results.append(executed)
-                        logger.error(f"  Failed: {order.symbol}")
+                        logger.info(f"  Submitted: {order.symbol} (fill pending)")
 
-                except Exception as e:
-                    logger.error(f"Error executing {order.symbol}: {e}")
+                    results.append(executed)
+
+                    # Update position manager
+                    if order.action == "BUY":
+                        self.positions.add_position(
+                            order.symbol, order.quantity, fill_price or order.estimated_price
+                        )
+                    else:
+                        self.positions.reduce_position(
+                            order.symbol, order.quantity, fill_price or order.estimated_price
+                        )
+                else:
                     executed = ExecutedOrder(
                         symbol=order.symbol,
                         action=order.action,
@@ -338,20 +330,28 @@ class ExecutionEngine:
                         status="rejected",
                         order_id="",
                         executed_at=datetime.now().isoformat(),
-                        notes=str(e),
+                        notes="Order placement failed",
                     )
                     results.append(executed)
+                    logger.error(f"  Failed: {order.symbol}")
 
-            return results
+            except Exception as e:
+                logger.error(f"Error executing {order.symbol}: {e}")
+                executed = ExecutedOrder(
+                    symbol=order.symbol,
+                    action=order.action,
+                    quantity=order.quantity,
+                    price=order.estimated_price,
+                    fill_price=0,
+                    fee=0,
+                    status="rejected",
+                    order_id="",
+                    executed_at=datetime.now().isoformat(),
+                    notes=str(e),
+                )
+                results.append(executed)
 
-        # Run async execution
-        try:
-            loop = asyncio.get_event_loop()
-        except RuntimeError:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-
-        self.executed_orders = loop.run_until_complete(execute_all())
+        self.executed_orders = results
         self._save_execution_log()
         return self.executed_orders
 

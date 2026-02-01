@@ -262,18 +262,24 @@ class IBKRClient:
             return {}
 
     def place_market_order(
-        self, symbol: str, quantity: int, action: str
+        self, symbol: str, quantity: float, action: str
     ) -> Optional[str]:
         """
-        Place a market order.
+        Place a market order. Supports fractional shares.
 
         Args:
             symbol: Stock ticker
-            quantity: Number of shares
+            quantity: Number of shares (can be fractional, e.g., 1.5)
             action: 'BUY' or 'SELL'
 
         Returns:
             Order ID or None if failed
+
+        Note:
+            Fractional shares on IBKR require:
+            - US stocks only
+            - Market orders only
+            - Regular trading hours (9:30 AM - 4:00 PM ET)
         """
         if not self.is_connected:
             logger.warning("Not connected to IBKR")
@@ -285,23 +291,25 @@ class IBKRClient:
             contract = Stock(symbol, "SMART", "USD")
             self.ib.qualifyContracts(contract)
 
+            # IBKR accepts fractional quantities directly
             order = MarketOrder(action, quantity)
             trade = self.ib.placeOrder(contract, order)
 
             # Wait for order to be submitted
             self.ib.sleep(1)
 
-            logger.info(f"Placed {action} order: {quantity} {symbol}, orderId={trade.order.orderId}")
+            qty_str = f"{quantity:.4f}" if quantity % 1 else f"{int(quantity)}"
+            logger.info(f"Placed {action} order: {qty_str} {symbol}, orderId={trade.order.orderId}")
             return str(trade.order.orderId)
         except Exception as e:
             logger.error(f"Failed to place order for {symbol}: {e}")
             return None
 
     def place_limit_order(
-        self, symbol: str, quantity: int, action: str, limit_price: float
+        self, symbol: str, quantity: float, action: str, limit_price: float
     ) -> Optional[str]:
         """
-        Place a limit order.
+        Place a limit order. Note: Fractional shares do NOT support limit orders.
 
         Args:
             symbol: Stock ticker

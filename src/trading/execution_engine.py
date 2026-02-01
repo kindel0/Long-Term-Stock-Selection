@@ -35,14 +35,14 @@ class ExecutionMode(Enum):
 
 @dataclass
 class ExecutedOrder:
-    """Record of an executed order."""
+    """Record of an executed order. Supports fractional shares."""
     symbol: str
     action: str
-    quantity: int
+    quantity: float  # Supports fractional shares
     price: float
     fill_price: float
     fee: float
-    status: str  # 'filled', 'partial', 'rejected', 'cancelled'
+    status: str  # 'filled', 'partial', 'rejected', 'cancelled', 'submitted'
     order_id: str
     executed_at: str
     notes: str = ""

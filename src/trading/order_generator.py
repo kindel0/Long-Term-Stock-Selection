@@ -22,18 +22,19 @@ class ProposedOrder:
     A proposed order pending user approval.
 
     Contains all information needed for review and execution.
+    Supports fractional shares for IBKR.
     """
 
     symbol: str
     action: str  # 'BUY' or 'SELL'
-    quantity: int
+    quantity: float  # Supports fractional shares
     estimated_price: float
     estimated_value: float = field(default=0.0)
     estimated_fee: float = field(default=0.0)
     reason: str = ""
     tax_impact: float = 0.0  # Estimated CGT impact for sells
-    current_shares: int = 0
-    target_shares: int = 0
+    current_shares: float = 0  # Supports fractional shares
+    target_shares: float = 0  # Supports fractional shares
     sector: str = ""
     predicted_rank: float = 0.0
 
@@ -124,7 +125,7 @@ class OrderGenerator:
         target_symbols = set(target_portfolio["TICKER"].values) if not target_portfolio.empty else set()
         current_symbols = set(current.keys())
 
-        # Calculate target shares for each stock
+        # Calculate target shares for each stock (supports fractional shares)
         n_stocks = len(target_portfolio) if not target_portfolio.empty else 0
         equal_weight_value = account_value / n_stocks if n_stocks > 0 else 0
 
@@ -134,7 +135,8 @@ class OrderGenerator:
                 symbol = row["TICKER"]
                 price = prices.get(symbol, 0)
                 if price > 0:
-                    target_shares[symbol] = int(equal_weight_value / price)
+                    # Round to 4 decimal places for fractional shares
+                    target_shares[symbol] = round(equal_weight_value / price, 4)
 
         # Generate SELL orders for stocks to exit
         for symbol in current_symbols - target_symbols:
@@ -247,9 +249,11 @@ class OrderGenerator:
                 logger.warning(f"No price for {symbol}, skipping")
                 continue
 
-            shares = int(per_stock / price)
+            # Support fractional shares (round to 4 decimal places)
+            shares = round(per_stock / price, 4)
 
-            if shares <= 0:
+            if shares * price < 1.0:  # IBKR minimum order is $1
+                logger.warning(f"Order value too small for {symbol}, skipping")
                 continue
 
             order = ProposedOrder(

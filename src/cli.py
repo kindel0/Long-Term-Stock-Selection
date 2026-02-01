@@ -631,6 +631,126 @@ def live_trade(data, stocks, confirm, algorithm, roe_weight):
 
 
 @cli.command()
+@click.option("--mode", type=click.Choice(["paper", "live"]), default="paper",
+              help="Account mode: paper or live")
+@click.option("--confirm", is_flag=True, help="Skip confirmation prompt")
+def cancel_orders(mode, confirm):
+    """Cancel all open orders in IBKR."""
+    from .trading.ibkr_client import IBKRClient
+
+    click.echo("=" * 60)
+    click.echo(f"CANCEL ORDERS - {mode.upper()} ACCOUNT")
+    click.echo("=" * 60)
+
+    # Connect with client_id=2 to avoid conflicts
+    click.echo(f"\nConnecting to IBKR ({mode} account)...")
+    ibkr = IBKRClient(mode=mode, client_id=2)
+    connected = ibkr.connect()
+
+    if not connected:
+        click.echo("ERROR: Could not connect to IBKR.")
+        click.echo("Make sure TWS or IB Gateway is running.")
+        sys.exit(1)
+
+    # Get open orders
+    orders = ibkr.get_open_orders()
+
+    if orders.empty:
+        click.echo("\nNo open orders to cancel.")
+        ibkr.disconnect()
+        return
+
+    # Display orders
+    click.echo(f"\nFound {len(orders)} open order(s):")
+    click.echo("-" * 60)
+    for _, order in orders.iterrows():
+        click.echo(
+            f"  {order['symbol']}: {order['action']} {order['quantity']:.0f} "
+            f"({order['order_type']}) - {order['status']}"
+        )
+    click.echo("-" * 60)
+
+    # Confirm cancellation
+    if not confirm:
+        click.echo("\nCancel all orders? [y/N]: ", nl=False)
+        response = input().strip().lower()
+        if response not in ("y", "yes"):
+            click.echo("Cancelled - no orders were modified.")
+            ibkr.disconnect()
+            return
+
+    # Cancel all orders
+    click.echo("\nCancelling all orders...")
+    ibkr.ib.reqGlobalCancel()
+    ibkr.ib.sleep(2)
+
+    # Verify
+    remaining = ibkr.get_open_orders()
+    if remaining.empty:
+        click.echo("All orders cancelled successfully.")
+    else:
+        click.echo(f"Warning: {len(remaining)} orders still open.")
+
+    ibkr.disconnect()
+    click.echo("\nDisconnected from IBKR")
+
+
+@cli.command()
+@click.option("--mode", type=click.Choice(["paper", "live"]), default="paper",
+              help="Account mode: paper or live")
+def show_orders(mode):
+    """Show all open orders in IBKR."""
+    from .trading.ibkr_client import IBKRClient
+
+    click.echo("=" * 60)
+    click.echo(f"OPEN ORDERS - {mode.upper()} ACCOUNT")
+    click.echo("=" * 60)
+
+    # Connect with client_id=2 to avoid conflicts
+    click.echo(f"\nConnecting to IBKR ({mode} account)...")
+    ibkr = IBKRClient(mode=mode, client_id=2)
+    connected = ibkr.connect()
+
+    if not connected:
+        click.echo("ERROR: Could not connect to IBKR.")
+        sys.exit(1)
+
+    # Get open orders
+    orders = ibkr.get_open_orders()
+
+    if orders.empty:
+        click.echo("\nNo open orders.")
+    else:
+        click.echo(f"\nFound {len(orders)} open order(s):")
+        click.echo("-" * 70)
+        click.echo(f"{'Symbol':<10} {'Action':<6} {'Qty':>8} {'Type':<10} {'Status':<15}")
+        click.echo("-" * 70)
+        for _, order in orders.iterrows():
+            click.echo(
+                f"{order['symbol']:<10} {order['action']:<6} {order['quantity']:>8.0f} "
+                f"{order['order_type']:<10} {order['status']:<15}"
+            )
+        click.echo("-" * 70)
+
+    # Also show positions
+    positions = ibkr.get_positions()
+    if not positions.empty:
+        click.echo(f"\nCurrent Positions ({len(positions)}):")
+        click.echo("-" * 70)
+        for _, pos in positions.iterrows():
+            value = pos['shares'] * pos['avg_cost']
+            click.echo(
+                f"  {pos['symbol']:<10} {pos['shares']:>8.0f} shares @ "
+                f"${pos['avg_cost']:>8.2f} = ${value:>12,.2f}"
+            )
+        click.echo("-" * 70)
+    else:
+        click.echo("\nNo current positions.")
+
+    ibkr.disconnect()
+
+
+@cli.command()
 @click.option("--year", type=int, default=datetime.now().year, help="Tax year")
 @click.option("--format", type=click.Choice(["console", "json", "csv"]), default="console")
 @click.option("--output", "-o", type=click.Path(), help="Output path")

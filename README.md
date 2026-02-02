@@ -223,6 +223,143 @@ python -m src.cli cancel-orders
 | `--resume` | true | Resume interrupted download |
 | `--fresh` | false | Start fresh, ignore progress |
 
+## Configuration
+
+### Configuration Files
+
+| File | Purpose |
+|------|---------|
+| `src/config.py` | Central Python configuration (constants, defaults) |
+| `config/settings.yaml` | User-editable settings |
+| `config/features.yaml` | Feature definitions and properties |
+
+### settings.yaml
+
+```yaml
+# Trading Settings
+trading:
+  mode: paper              # paper or live
+  broker: ibkr
+  default_portfolio_size: 15
+  min_market_cap: "Mid Cap"
+  rebalance_frequency: quarterly
+
+# Backtest Defaults
+backtest:
+  start_year: 2017
+  end_year: 2024
+  initial_capital: 30000
+  n_stocks: 15
+  fee_simulation: true
+
+# Tax Settings (Ireland)
+tax:
+  jurisdiction: ireland
+  cgt_rate: 0.33
+  annual_exemption: 1270
+  w8ben_filed: true
+  us_withholding_rate: 0.15
+
+# Data Settings
+data:
+  panel_path: data/simfin_panel.csv
+  cache_enabled: true
+  fundamental_lag_months: 1    # PIT lag for fundamentals
+  macro_lag_months: 1          # PIT lag for macro data
+
+# Model Settings
+model:
+  type: random_forest
+  n_estimators: 500
+  max_depth: 12
+  max_features: 0.3
+  min_samples_leaf: 50
+
+# IBKR Connection
+ibkr:
+  host: "127.0.0.1"
+  paper_port: 7497
+  live_port: 7496
+  client_id: 1
+  pricing_model: tiered        # tiered or fixed
+```
+
+### Key Parameters in config.py
+
+#### Market Cap Categories (2021 Base Year)
+```python
+MARKET_CAP_BOUNDARIES = {
+    "Nano Cap": 50e6,      # < $50M
+    "Micro Cap": 300e6,    # < $300M
+    "Small Cap": 2e9,      # < $2B
+    "Mid Cap": 10e9,       # < $10B
+    "Large Cap": 200e9,    # < $200B
+    # Mega Cap = above Large Cap
+}
+```
+
+#### Quality Filters
+```python
+QUALITY_FILTERS = {
+    "min_price": 1.0,              # Exclude penny stocks
+    "min_market_cap": 5e6,         # Minimum $5M market cap
+    "min_book_equity": 0,          # Positive book equity required
+    "return_bounds": (-0.99, 10.0) # Valid return range (-99% to +1000%)
+}
+```
+
+#### Random Forest Hyperparameters
+```python
+RF_PARAMS = {
+    "n_estimators": 500,
+    "max_depth": 12,
+    "max_features": 0.3,
+    "min_samples_leaf": 50,
+    "max_samples": 0.7,
+    "random_state": 42,
+}
+```
+
+#### IBKR Fee Structure
+```python
+IBKR_FEES = {
+    "tiered": {
+        "per_share": 0.0035,
+        "min_per_order": 0.35,
+        "max_pct": 0.01,
+    },
+    "fixed": {
+        "per_share": 0.005,
+        "min_per_order": 1.00,
+        "max_pct": 0.01,
+    },
+}
+```
+
+#### Ireland Tax Settings
+```python
+IRELAND_TAX = {
+    "cgt_rate": 0.33,              # 33% Capital Gains Tax
+    "annual_exemption": 1270,      # €1,270 annual exemption
+    "us_withholding_rate": 0.15,   # 15% with W-8BEN
+}
+```
+
+### Feature Categories
+
+The model uses 50+ features across these categories (defined in `config/features.yaml`):
+
+| Category | Features | Description |
+|----------|----------|-------------|
+| Valuation | 11 | bm, ptb, ps, pcf, pe_*, evm, dpr, divyield |
+| Profitability | 13 | npm, gpm, roa, roe, roce, margins |
+| Solvency | 10 | de_ratio, debt_at, intcov, dltt_be |
+| Liquidity | 4 | curr_ratio, quick_ratio, cash_ratio |
+| Efficiency | 7 | at_turn, inv_turn, rect_turn, pay_turn |
+| Financial Soundness | 8 | cash_lt, profit_lct, fcf_ocf |
+| Macro | 8 | FEDFUNDS, DGS10, CPI, GDP |
+| Size | 1 | MthCap (market capitalization) |
+
 ## Testing
 
 ```bash

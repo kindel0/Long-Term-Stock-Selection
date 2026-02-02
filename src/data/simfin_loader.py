@@ -18,11 +18,12 @@ from ..config import (
     SIMFIN_BALANCE_COLS,
     SIMFIN_CASHFLOW_COLS,
 )
+from .base_loader import DataLoader
 
 logger = logging.getLogger(__name__)
 
 
-class SimFinLoader:
+class SimFinLoader(DataLoader):
     """
     Loader for SimFin data files.
 
@@ -37,6 +38,7 @@ class SimFinLoader:
         Args:
             data_dir: Directory containing SimFin CSV files (default from config)
         """
+        super().__init__(data_dir)
         self.data_dir = Path(data_dir) if data_dir else SIMFIN_DIR
 
     def _read_simfin(
@@ -260,3 +262,7 @@ class SimFinLoader:
         ]
 
         return set(financial["Ticker"])
+
+    def get_source_name(self) -> str:
+        """Return the data source name."""
+        return "simfin"

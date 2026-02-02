@@ -32,6 +32,8 @@ PROJECT_ROOT = Path(__file__).parent.parent
 # Data directories
 DATA_DIR = PROJECT_ROOT / "data"
 SIMFIN_DIR = DATA_DIR / "simfin"
+EODHD_DIR = DATA_DIR / "eodhd"
+PANELS_DIR = DATA_DIR / "panels"
 CACHE_DIR = DATA_DIR / "cache"
 TRADES_DIR = DATA_DIR / "trades"
 PORTFOLIOS_DIR = DATA_DIR / "portfolios"
@@ -45,7 +47,14 @@ FIGURES_DIR = RESULTS_DIR / "figures"
 DEFAULT_PANEL_PATH = DATA_DIR / "simfin_panel.csv"
 CACHED_PANEL_PATH = CACHE_DIR / "simfin_panel.parquet"
 FRED_MACRO_CACHE = DATA_DIR / "fred_macro_cache.csv"
+EODHD_MACRO_CACHE = EODHD_DIR / "macro.parquet"
 BENCHMARK_CACHE = CACHE_DIR / "sp500_benchmark.parquet"
+
+# Data source options
+DATA_SOURCES = ["simfin", "eodhd"]
+DEFAULT_DATA_SOURCE = "simfin"
+MACRO_SOURCES = ["fred", "eodhd"]
+DEFAULT_MACRO_SOURCE = "fred"
 
 # =============================================================================
 # FEATURE CATEGORIES (Single source of truth)
@@ -359,6 +368,81 @@ SIMFIN_CASHFLOW_COLS = [
     "Change in Fixed Assets & Intangibles",
     "Dividends Paid",
     "Cash from (Repurchase of) Equity",
+]
+
+# =============================================================================
+# EODHD CONFIGURATION
+# =============================================================================
+
+EODHD_CONFIG: Dict[str, Any] = {
+    "base_url": "https://eodhd.com/api",
+    "exchange": "US",
+    "bulk_endpoint": "eod-bulk-last-day",
+    "fundamentals_endpoint": "fundamentals",
+    "exchange_symbols_endpoint": "exchange-symbol-list",
+    # API rate limits
+    "requests_per_minute": 1000,
+    "bulk_batch_size": 500,
+    # Data filters
+    "securities": "common-stock",  # Options: common-stock, all
+    "min_market_cap": 5e6,
+    # Historical depth
+    "start_date": "1995-01-01",
+}
+
+# EODHD file names in cache directory
+EODHD_FILES = {
+    "prices": "prices.parquet",
+    "income": "income.parquet",
+    "balance": "balance.parquet",
+    "cashflow": "cashflow.parquet",
+    "companies": "companies.parquet",
+    "companies_detail": "companies_detail.parquet",  # Sector/industry from fundamentals API
+    "fundamentals_all": "fundamentals_all.parquet",  # Complete fundamentals (all columns)
+    "macro": "macro.parquet",
+    "metadata": "metadata.json",
+}
+
+# EODHD columns to request for fundamentals
+EODHD_FUNDAMENTAL_FIELDS = [
+    # Income statement
+    "totalRevenue",
+    "costOfRevenue",
+    "grossProfit",
+    "operatingIncome",
+    "interestExpense",
+    "incomeBeforeTax",
+    "incomeTaxExpense",
+    "netIncome",
+    "netIncomeApplicableToCommonShares",
+    "depreciation",
+    "researchDevelopment",
+    # Balance sheet
+    "totalAssets",
+    "totalStockholderEquity",
+    "totalCurrentAssets",
+    "totalCurrentLiabilities",
+    "inventory",
+    "netReceivables",
+    "shortTermDebt",
+    "longTermDebt",
+    "cashAndShortTermInvestments",
+    "propertyPlantEquipment",
+    "totalLiabilities",
+    "accountsPayable",
+    # Cash flow
+    "totalCashFromOperatingActivities",
+    "capitalExpenditures",
+    "dividendsPaid",
+]
+
+# EODHD macro indicators
+EODHD_MACRO_INDICATORS = [
+    "gdp_current_usd",
+    "real_interest_rate",
+    "inflation_consumer_prices_annual",
+    "interest_rate",
+    "unemployment_total",
 ]
 
 # =============================================================================

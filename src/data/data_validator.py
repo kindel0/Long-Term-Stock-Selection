@@ -1,11 +1,13 @@
 """
 Data validation utilities for stock selection.
 
-Provides validation functions to ensure data quality and integrity.
+Provides validation functions to ensure data quality and integrity,
+including comparison between different data sources (SimFin, EODHD).
 """
 
 import logging
-from typing import Dict, List, Optional, Tuple
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple, Union
 
 import numpy as np
 import pandas as pd
@@ -329,3 +331,399 @@ class DataValidator:
                 print(f"  - {warning}")
 
         print("=" * 60)
+
+
+class DataSourceComparator:
+    """
+    Compare data quality between different data sources (SimFin vs EODHD).
+
+    Provides methods to compare:
+    - Ticker overlap
+    - Fundamental data correlation
+    - Price data correlation
+    - Missing data patterns
+    """
+
+    def __init__(self):
+        """Initialize the comparator."""
+        self.comparison_results = {}
+
+    def compare_fundamentals(
+        self,
+        simfin_df: pd.DataFrame,
+        eodhd_df: pd.DataFrame,
+        key_metrics: Optional[List[str]] = None,
+        sample_tickers: int = 100,
+    ) -> Dict:
+        """
+        Compare fundamental data between two sources.
+
+        Args:
+            simfin_df: SimFin fundamentals DataFrame
+            eodhd_df: EODHD fundamentals DataFrame
+            key_metrics: Metrics to compare (default: common fundamentals)
+            sample_tickers: Number of tickers to sample for comparison
+
+        Returns:
+            Comparison report dictionary
+        """
+        key_metrics = key_metrics or [
+            "Revenue",
+            "Net Income",
+            "Total Assets",
+            "Total Equity",
+            "Net Cash from Operating Activities",
+        ]
+
+        # Find overlapping tickers
+        simfin_tickers = set(simfin_df["Ticker"].unique())
+        eodhd_tickers = set(eodhd_df["Ticker"].unique())
+        overlap = simfin_tickers & eodhd_tickers
+
+        report = {
+            "simfin_tickers": len(simfin_tickers),
+            "eodhd_tickers": len(eodhd_tickers),
+            "overlapping_tickers": len(overlap),
+            "overlap_pct": len(overlap) / max(len(simfin_tickers), 1) * 100,
+            "metric_comparisons": {},
+        }
+
+        if len(overlap) == 0:
+            report["error"] = "No overlapping tickers found"
+            return report
+
+        # Sample tickers for detailed comparison
+        sample = list(overlap)[:sample_tickers]
+
+        # Compare each metric
+        for metric in key_metrics:
+            if metric not in simfin_df.columns or metric not in eodhd_df.columns:
+                report["metric_comparisons"][metric] = {"status": "missing_column"}
+                continue
+
+            metric_report = self._compare_metric(
+                simfin_df, eodhd_df, metric, sample
+            )
+            report["metric_comparisons"][metric] = metric_report
+
+        return report
+
+    def _compare_metric(
+        self,
+        df1: pd.DataFrame,
+        df2: pd.DataFrame,
+        metric: str,
+        tickers: List[str],
+    ) -> Dict:
+        """
+        Compare a single metric between two data sources.
+
+        Args:
+            df1: First DataFrame (SimFin)
+            df2: Second DataFrame (EODHD)
+            metric: Column name to compare
+            tickers: List of tickers to include
+
+        Returns:
+            Metric comparison dictionary
+        """
+        # Filter to sample tickers and get most recent value per ticker
+        df1_filtered = df1[df1["Ticker"].isin(tickers)].copy()
+        df2_filtered = df2[df2["Ticker"].isin(tickers)].copy()
+
+        # Get most recent value per ticker
+        if "Publish Date" in df1_filtered.columns:
+            df1_latest = df1_filtered.sort_values("Publish Date").groupby("Ticker").last()
+        else:
+            df1_latest = df1_filtered.groupby("Ticker").last()
+
+        if "Publish Date" in df2_filtered.columns:
+            df2_latest = df2_filtered.sort_values("Publish Date").groupby("Ticker").last()
+        else:
+            df2_latest = df2_filtered.groupby("Ticker").last()
+
+        # Merge on ticker index
+        merged = df1_latest[[metric]].join(
+            df2_latest[[metric]],
+            lsuffix="_simfin",
+            rsuffix="_eodhd",
+            how="inner",
+        )
+
+        if len(merged) == 0:
+            return {"status": "no_overlap", "n_compared": 0}
+
+        col1 = f"{metric}_simfin"
+        col2 = f"{metric}_eodhd"
+
+        # Drop rows where either is NaN
+        valid = merged.dropna(subset=[col1, col2])
+
+        if len(valid) < 2:
+            return {"status": "insufficient_data", "n_compared": len(valid)}
+
+        # Calculate correlation
+        correlation = valid[col1].corr(valid[col2])
+
+        # Calculate mean absolute percentage difference
+        diff = (valid[col1] - valid[col2]).abs()
+        denom = (valid[col1].abs() + valid[col2].abs()) / 2
+        mape = (diff / denom.replace(0, np.nan)).mean() * 100
+
+        # Calculate match rate (within 10%)
+        pct_diff = diff / denom.replace(0, np.nan)
+        match_rate = (pct_diff < 0.10).mean() * 100
+
+        return {
+            "status": "compared",
+            "n_compared": len(valid),
+            "correlation": round(correlation, 4),
+            "mape_pct": round(mape, 2),
+            "match_rate_10pct": round(match_rate, 2),
+        }
+
+    def compare_prices(
+        self,
+        simfin_df: pd.DataFrame,
+        eodhd_df: pd.DataFrame,
+        sample_tickers: int = 50,
+    ) -> Dict:
+        """
+        Compare price data between two sources.
+
+        Args:
+            simfin_df: SimFin price DataFrame
+            eodhd_df: EODHD price DataFrame
+            sample_tickers: Number of tickers to sample
+
+        Returns:
+            Price comparison report
+        """
+        # Find overlapping tickers
+        simfin_tickers = set(simfin_df["Ticker"].unique())
+        eodhd_tickers = set(eodhd_df["Ticker"].unique())
+        overlap = list(simfin_tickers & eodhd_tickers)
+
+        report = {
+            "simfin_tickers": len(simfin_tickers),
+            "eodhd_tickers": len(eodhd_tickers),
+            "overlapping_tickers": len(overlap),
+        }
+
+        if len(overlap) == 0:
+            report["error"] = "No overlapping tickers found"
+            return report
+
+        # Sample for comparison
+        sample = overlap[:sample_tickers]
+
+        correlations = []
+        for ticker in sample:
+            sf = simfin_df[simfin_df["Ticker"] == ticker].copy()
+            eo = eodhd_df[eodhd_df["Ticker"] == ticker].copy()
+
+            if len(sf) < 10 or len(eo) < 10:
+                continue
+
+            # Merge on date
+            sf["Date"] = pd.to_datetime(sf["Date"]).dt.date
+            eo["Date"] = pd.to_datetime(eo["Date"]).dt.date
+
+            merged = sf.merge(eo, on="Date", suffixes=("_sf", "_eo"))
+
+            if len(merged) < 10:
+                continue
+
+            price_col_sf = "Adj. Close_sf" if "Adj. Close_sf" in merged.columns else "Close_sf"
+            price_col_eo = "Adj. Close_eo" if "Adj. Close_eo" in merged.columns else "Close_eo"
+
+            if price_col_sf in merged.columns and price_col_eo in merged.columns:
+                corr = merged[price_col_sf].corr(merged[price_col_eo])
+                if not np.isnan(corr):
+                    correlations.append(corr)
+
+        report["tickers_compared"] = len(correlations)
+        if correlations:
+            report["mean_correlation"] = round(np.mean(correlations), 4)
+            report["min_correlation"] = round(np.min(correlations), 4)
+            report["max_correlation"] = round(np.max(correlations), 4)
+        else:
+            report["error"] = "Could not compute price correlations"
+
+        return report
+
+    def compare_coverage(
+        self,
+        simfin_df: pd.DataFrame,
+        eodhd_df: pd.DataFrame,
+    ) -> Dict:
+        """
+        Compare data coverage (date ranges, ticker counts).
+
+        Args:
+            simfin_df: SimFin DataFrame
+            eodhd_df: EODHD DataFrame
+
+        Returns:
+            Coverage comparison report
+        """
+        report = {
+            "simfin": {},
+            "eodhd": {},
+        }
+
+        # SimFin stats
+        if "Ticker" in simfin_df.columns:
+            report["simfin"]["n_tickers"] = simfin_df["Ticker"].nunique()
+        if "Date" in simfin_df.columns:
+            report["simfin"]["date_range"] = (
+                str(simfin_df["Date"].min()),
+                str(simfin_df["Date"].max()),
+            )
+        if "Publish Date" in simfin_df.columns:
+            report["simfin"]["date_range"] = (
+                str(simfin_df["Publish Date"].min()),
+                str(simfin_df["Publish Date"].max()),
+            )
+        report["simfin"]["n_rows"] = len(simfin_df)
+
+        # EODHD stats
+        if "Ticker" in eodhd_df.columns:
+            report["eodhd"]["n_tickers"] = eodhd_df["Ticker"].nunique()
+        if "Date" in eodhd_df.columns:
+            report["eodhd"]["date_range"] = (
+                str(eodhd_df["Date"].min()),
+                str(eodhd_df["Date"].max()),
+            )
+        if "Publish Date" in eodhd_df.columns:
+            report["eodhd"]["date_range"] = (
+                str(eodhd_df["Publish Date"].min()),
+                str(eodhd_df["Publish Date"].max()),
+            )
+        report["eodhd"]["n_rows"] = len(eodhd_df)
+
+        return report
+
+    def generate_full_report(
+        self,
+        simfin_loader,
+        eodhd_loader,
+    ) -> Dict:
+        """
+        Generate a comprehensive comparison report.
+
+        Args:
+            simfin_loader: SimFinLoader instance
+            eodhd_loader: EODHDLoader instance
+
+        Returns:
+            Full comparison report dictionary
+        """
+        report = {
+            "timestamp": pd.Timestamp.now().isoformat(),
+            "sections": {},
+        }
+
+        # Compare fundamentals
+        try:
+            sf_fund = simfin_loader.load_fundamentals()
+            eo_fund = eodhd_loader.load_fundamentals()
+            report["sections"]["fundamentals"] = self.compare_fundamentals(
+                sf_fund, eo_fund
+            )
+        except Exception as e:
+            report["sections"]["fundamentals"] = {"error": str(e)}
+
+        # Compare prices
+        try:
+            sf_prices = simfin_loader.load_prices()
+            eo_prices = eodhd_loader.load_prices()
+            report["sections"]["prices"] = self.compare_prices(
+                sf_prices, eo_prices
+            )
+        except Exception as e:
+            report["sections"]["prices"] = {"error": str(e)}
+
+        # Compare coverage
+        try:
+            report["sections"]["coverage"] = {
+                "fundamentals": self.compare_coverage(sf_fund, eo_fund),
+                "prices": self.compare_coverage(sf_prices, eo_prices),
+            }
+        except Exception as e:
+            report["sections"]["coverage"] = {"error": str(e)}
+
+        # Recommendation
+        report["recommendation"] = self._generate_recommendation(report)
+
+        return report
+
+    def _generate_recommendation(self, report: Dict) -> str:
+        """Generate a recommendation based on comparison results."""
+        fund_section = report.get("sections", {}).get("fundamentals", {})
+        price_section = report.get("sections", {}).get("prices", {})
+
+        issues = []
+
+        # Check fundamental correlations
+        metrics = fund_section.get("metric_comparisons", {})
+        low_corr_metrics = []
+        for metric, data in metrics.items():
+            if data.get("status") == "compared":
+                if data.get("correlation", 1.0) < 0.9:
+                    low_corr_metrics.append(metric)
+
+        if low_corr_metrics:
+            issues.append(f"Low correlation for: {', '.join(low_corr_metrics)}")
+
+        # Check price correlations
+        mean_price_corr = price_section.get("mean_correlation", 1.0)
+        if mean_price_corr < 0.99:
+            issues.append(f"Price correlation is {mean_price_corr:.2%}")
+
+        # Check overlap
+        overlap_pct = fund_section.get("overlap_pct", 0)
+        if overlap_pct < 80:
+            issues.append(f"Only {overlap_pct:.1f}% ticker overlap")
+
+        if not issues:
+            return "Both data sources appear consistent. Either can be used."
+        else:
+            return f"Review needed: {'; '.join(issues)}"
+
+    def print_comparison_report(self, report: Dict) -> None:
+        """Print a comparison report to console."""
+        print("\n" + "=" * 70)
+        print("DATA SOURCE COMPARISON REPORT")
+        print("=" * 70)
+
+        # Fundamentals
+        fund = report.get("sections", {}).get("fundamentals", {})
+        print("\nFUNDAMENTALS COMPARISON:")
+        print(f"  SimFin tickers: {fund.get('simfin_tickers', 'N/A')}")
+        print(f"  EODHD tickers: {fund.get('eodhd_tickers', 'N/A')}")
+        print(f"  Overlap: {fund.get('overlapping_tickers', 'N/A')} ({fund.get('overlap_pct', 0):.1f}%)")
+
+        metrics = fund.get("metric_comparisons", {})
+        if metrics:
+            print("\n  Metric Correlations:")
+            for metric, data in metrics.items():
+                if data.get("status") == "compared":
+                    print(f"    {metric}: r={data.get('correlation', 'N/A')}, "
+                          f"MAPE={data.get('mape_pct', 'N/A')}%, "
+                          f"Match@10%={data.get('match_rate_10pct', 'N/A')}%")
+                else:
+                    print(f"    {metric}: {data.get('status', 'unknown')}")
+
+        # Prices
+        prices = report.get("sections", {}).get("prices", {})
+        print("\nPRICE COMPARISON:")
+        print(f"  Tickers compared: {prices.get('tickers_compared', 'N/A')}")
+        print(f"  Mean correlation: {prices.get('mean_correlation', 'N/A')}")
+        print(f"  Min correlation: {prices.get('min_correlation', 'N/A')}")
+
+        # Recommendation
+        print("\nRECOMMENDATION:")
+        print(f"  {report.get('recommendation', 'N/A')}")
+
+        print("=" * 70)

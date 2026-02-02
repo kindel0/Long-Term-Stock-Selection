@@ -3,24 +3,30 @@ Panel dataset builder for stock selection.
 
 Builds a monthly point-in-time (PIT) panel with proper data alignment
 to prevent lookahead bias. Based on improved_simfin_panel.py.
+
+Supports multiple data sources (SimFin, EODHD) via dependency injection.
 """
 
 import logging
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional, Tuple, Union
 
 import numpy as np
 import pandas as pd
 
 from ..config import (
     SIMFIN_DIR,
+    EODHD_DIR,
     DATA_DIR,
     MARKET_CAP_BOUNDARIES,
     MARKET_CAP_BASE_YEAR,
     DATA_PIPELINE,
     QUALITY_FILTERS,
     EPS,
+    DEFAULT_DATA_SOURCE,
+    DEFAULT_MACRO_SOURCE,
 )
+from .base_loader import DataLoader
 from .simfin_loader import SimFinLoader
 
 logger = logging.getLogger(__name__)
@@ -36,10 +42,19 @@ class PanelBuilder:
     - Year-adjusted market cap categories
     - Optional macro features
 
+    Supports multiple data sources via dependency injection:
+        - SimFin (default)
+        - EODHD
+
     Usage:
+        # Default (SimFin)
         builder = PanelBuilder()
         panel = builder.build()
-        builder.save(panel, 'data/simfin_panel.csv')
+
+        # With EODHD
+        from src.data.eodhd_loader import EODHDLoader
+        builder = PanelBuilder(loader=EODHDLoader())
+        panel = builder.build()
     """
 
     def __init__(
@@ -47,17 +62,34 @@ class PanelBuilder:
         simfin_dir: Optional[Path] = None,
         fundamental_lag_months: int = None,
         macro_lag_months: int = None,
+        loader: Optional[DataLoader] = None,
+        data_source: str = DEFAULT_DATA_SOURCE,
+        macro_source: str = DEFAULT_MACRO_SOURCE,
     ):
         """
         Initialize the panel builder.
 
         Args:
-            simfin_dir: Directory with SimFin CSV files
+            simfin_dir: Directory with SimFin CSV files (for backward compatibility)
             fundamental_lag_months: Lag for fundamental data (default from config)
             macro_lag_months: Lag for macro data (default from config)
+            loader: DataLoader instance (overrides simfin_dir and data_source)
+            data_source: Data source name ('simfin' or 'eodhd')
+            macro_source: Macro data source ('fred' or 'eodhd')
         """
-        self.simfin_dir = Path(simfin_dir) if simfin_dir else SIMFIN_DIR
-        self.loader = SimFinLoader(self.simfin_dir)
+        # Determine which loader to use
+        if loader is not None:
+            self.loader = loader
+        elif data_source == "eodhd":
+            from .eodhd_loader import EODHDLoader
+            self.loader = EODHDLoader(EODHD_DIR)
+        else:
+            # Default to SimFin
+            self.simfin_dir = Path(simfin_dir) if simfin_dir else SIMFIN_DIR
+            self.loader = SimFinLoader(self.simfin_dir)
+
+        self.data_source = self.loader.get_source_name()
+        self.macro_source = macro_source
 
         self.fundamental_lag = (
             fundamental_lag_months
@@ -70,6 +102,8 @@ class PanelBuilder:
             else DATA_PIPELINE["macro_shift_months"]
         )
 
+        logger.info(f"PanelBuilder initialized with data_source={self.data_source}, macro_source={self.macro_source}")
+
     def build_monthly_prices(self) -> pd.DataFrame:
         """
         Build monthly price panel from daily prices.
@@ -80,18 +114,53 @@ class PanelBuilder:
         logger.info("Building monthly prices...")
         px = self.loader.load_prices()
 
+        # If prices don't have Shares Outstanding, try to get from fundamentals
+        if "Shares Outstanding" not in px.columns or px["Shares Outstanding"].isna().all():
+            logger.info("Shares Outstanding not in price data, loading from fundamentals...")
+            shares_df = self.loader.get_shares_outstanding()
+            if not shares_df.empty:
+                # Merge shares outstanding with prices
+                shares_df = shares_df.rename(columns={"Ticker": "ticker_shares", "Date": "date_shares"})
+                px = px.sort_values(["Ticker", "Date"])
+                shares_df = shares_df.sort_values(["ticker_shares", "date_shares"])
+
+                # Use merge_asof to get most recent shares outstanding for each price date
+                px = pd.merge_asof(
+                    px,
+                    shares_df[["ticker_shares", "date_shares", "Shares Outstanding"]],
+                    left_on="Date",
+                    right_on="date_shares",
+                    left_by="Ticker",
+                    right_by="ticker_shares",
+                    direction="backward",
+                )
+                px = px.drop(columns=["ticker_shares", "date_shares"], errors="ignore")
+                logger.info(f"Merged shares outstanding: {px['Shares Outstanding'].notna().sum()} values")
+            else:
+                logger.warning("No shares outstanding data available - MthCap will be NaN")
+                px["Shares Outstanding"] = np.nan
+
         # Snap to month-end
         px["public_date"] = (
             px["Date"].dt.to_period("M").dt.to_timestamp("M")
             + pd.offsets.MonthEnd(0)
         )
 
+        # Determine which columns to keep
+        price_cols = ["Ticker", "SimFinId", "public_date", "Adj. Close"]
+        if "Shares Outstanding" in px.columns:
+            price_cols.append("Shares Outstanding")
+
         # Get last trading day of each month per ticker
         last_in_month = (
             px.drop_duplicates(["Ticker", "public_date"], keep="last")
-            .loc[:, ["Ticker", "SimFinId", "public_date", "Adj. Close", "Shares Outstanding"]]
+            .loc[:, [c for c in price_cols if c in px.columns]]
             .rename(columns={"Adj. Close": "MthPrc"})
         )
+
+        # Ensure Shares Outstanding column exists
+        if "Shares Outstanding" not in last_in_month.columns:
+            last_in_month["Shares Outstanding"] = np.nan
 
         # Trailing 12-month dividends
         div_m = (
@@ -575,6 +644,32 @@ class PanelBuilder:
         panel: pd.DataFrame,
         cache_csv: Optional[Path] = None,
         rebuild: bool = False,
+        source: Optional[str] = None,
+    ) -> pd.DataFrame:
+        """
+        Add macroeconomic features.
+
+        Args:
+            panel: Panel DataFrame
+            cache_csv: Path to cache file (for FRED)
+            rebuild: Force rebuild from source
+            source: Override macro source ('fred' or 'eodhd')
+
+        Returns:
+            Panel with macro features added
+        """
+        source = source or self.macro_source
+
+        if source == "eodhd":
+            return self._add_eodhd_macro(panel, rebuild)
+        else:
+            return self._add_fred_macro(panel, cache_csv, rebuild)
+
+    def _add_fred_macro(
+        self,
+        panel: pd.DataFrame,
+        cache_csv: Optional[Path] = None,
+        rebuild: bool = False,
     ) -> pd.DataFrame:
         """Add macroeconomic features from FRED."""
         try:
@@ -654,6 +749,45 @@ class PanelBuilder:
         panel = panel.merge(macro, on="public_date", how="left")
         return panel
 
+    def _add_eodhd_macro(
+        self,
+        panel: pd.DataFrame,
+        rebuild: bool = False,
+    ) -> pd.DataFrame:
+        """Add macroeconomic features from EODHD cache."""
+        from .eodhd_loader import EODHDLoader
+
+        # Load EODHD macro if available
+        try:
+            eodhd_loader = EODHDLoader(EODHD_DIR)
+            macro = eodhd_loader.load_macro()
+        except FileNotFoundError:
+            logger.warning("EODHD macro data not found, falling back to FRED")
+            return self._add_fred_macro(panel, rebuild=rebuild)
+
+        if macro.empty:
+            logger.warning("EODHD macro data is empty, falling back to FRED")
+            return self._add_fred_macro(panel, rebuild=rebuild)
+
+        logger.info(f"Using EODHD macro data: {len(macro)} records")
+
+        # Ensure date column matches
+        if "public_date" not in macro.columns:
+            date_col = [c for c in macro.columns if "date" in c.lower()]
+            if date_col:
+                macro = macro.rename(columns={date_col[0]: "public_date"})
+
+        macro["public_date"] = pd.to_datetime(macro["public_date"])
+
+        # Apply lag
+        if self.macro_lag > 0:
+            macro_cols = [c for c in macro.columns if c != "public_date"]
+            macro[macro_cols] = macro[macro_cols].shift(self.macro_lag)
+            logger.info(f"Applied {self.macro_lag}-month lag to EODHD macro features")
+
+        panel = panel.merge(macro, on="public_date", how="left")
+        return panel
+
     def build(
         self,
         add_macro: bool = True,
@@ -675,6 +809,8 @@ class PanelBuilder:
         """
         logger.info("="*60)
         logger.info("Building stock selection panel")
+        logger.info(f"Data source: {self.data_source}")
+        logger.info(f"Macro source: {self.macro_source}")
         logger.info("="*60)
 
         # Build components

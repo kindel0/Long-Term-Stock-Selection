@@ -4,13 +4,34 @@ Project guidance for Claude Code when working with this repository.
 
 ## Project Overview
 
-ML-based long-term stock selection system using Random Forest, based on Wynne (2023) thesis. Uses SimFin fundamental data to predict 1-year forward returns.
+ML-based long-term stock selection system using Random Forest, based on Wynne (2023) thesis. Supports multiple data sources (SimFin, EODHD) to predict 1-year forward returns.
 
 ## Key Commands
 
 ### Build Panel Dataset
 ```bash
+# SimFin (default)
 python -m src.cli build-panel --simfin-dir data/simfin --output data/simfin_panel.csv
+
+# EODHD (requires download-eodhd first)
+python -m src.cli build-panel --data-source eodhd --output data/panels/eodhd_panel.parquet --format parquet
+```
+
+### Download EODHD Data
+```bash
+# Set API key (or use --api-key)
+export EODHD_API_KEY=your_key
+
+# Download data (common stocks only, saves as Parquet)
+python -m src.cli download-eodhd --output-dir data/eodhd
+
+# Include macro indicators
+python -m src.cli download-eodhd --include-macro
+```
+
+### Compare Data Sources
+```bash
+python -m src.cli compare-sources --simfin-dir data/simfin --eodhd-dir data/eodhd
 ```
 
 ### Run Backtest
@@ -39,8 +60,13 @@ src/
 ├── models/
 │   └── stock_selection_rf.py   # Random Forest model
 ├── data/
-│   ├── panel_builder.py        # Builds panel from SimFin CSVs
-│   └── simfin_loader.py        # Loads SimFin files
+│   ├── base_loader.py          # Abstract DataLoader interface
+│   ├── simfin_loader.py        # Loads SimFin CSV files
+│   ├── eodhd_loader.py         # Loads EODHD Parquet cache
+│   ├── eodhd_downloader.py     # Downloads from EODHD API
+│   ├── column_mapping.py       # EODHD→Standard column mappings
+│   ├── panel_builder.py        # Builds panel from any data source
+│   └── data_validator.py       # Validates data, compares sources
 ├── backtest/
 │   ├── engine.py               # PIT-compliant backtest engine
 │   ├── metrics.py              # Performance metrics
@@ -50,7 +76,10 @@ src/
 └── tax/
     └── ireland_cgt.py          # Ireland CGT calculator
 
-data/simfin/                    # SimFin source files (not in git)
+data/
+├── simfin/                     # SimFin source files (CSV, not in git)
+├── eodhd/                      # EODHD cache files (Parquet, not in git)
+└── panels/                     # Built panel datasets
 config/                         # YAML configuration
 tests/                          # Unit tests
 docs/                           # Thesis PDF
@@ -58,13 +87,24 @@ docs/                           # Thesis PDF
 
 ## Data Pipeline
 
-1. **SimFin CSVs** → `simfin_loader.py` loads files
+Supports two data sources via `DataLoader` interface:
+- **SimFin** (default): CSV files, free with registration
+- **EODHD**: Parquet cache from API, requires paid subscription
+
+Pipeline steps:
+1. **Data source** → `simfin_loader.py` or `eodhd_loader.py`
 2. **Daily prices** → Monthly with TTM dividends, 1yr returns
 3. **Quarterly fundamentals** → TTM for flow items
 4. **PIT merge** → `merge_asof` with 1-month lag
 5. **70+ ratios** → Valuation, profitability, solvency, etc.
 6. **Quality filters** → Min price, market cap, positive equity
 7. **Year-adjusted caps** → Dynamic market cap buckets
+
+### Data Source Options
+| Source | Format | Pros | Cons |
+|--------|--------|------|------|
+| SimFin | CSV | Free, large history | Manual download |
+| EODHD | Parquet | API access, faster | Paid, 100K calls/mo |
 
 ## Key Patterns
 
@@ -98,6 +138,17 @@ Required in `data/simfin/`:
 - `us-companies.csv`
 - `industries.csv`
 
+## EODHD Cache Files
+
+Created by `download-eodhd` in `data/eodhd/`:
+- `prices.parquet` - Historical daily prices
+- `income.parquet` - Income statement data
+- `balance.parquet` - Balance sheet data
+- `cashflow.parquet` - Cash flow statement data
+- `companies.parquet` - Company metadata
+- `macro.parquet` - Macro indicators (optional)
+- `metadata.json` - Download timestamp and stats
+
 ## Dependencies
 
-pandas, numpy, scikit-learn, matplotlib, yfinance, click
+pandas, numpy, scikit-learn, matplotlib, yfinance, click, requests, pyarrow

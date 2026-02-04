@@ -103,6 +103,7 @@ class EODHDDownloader:
 
         # Progress tracking for resume
         self._progress_file = self.output_dir / ".download_progress.json"
+        self._download_incomplete = False  # Flag to track if download hit API limit
 
     def get_remaining_quota(self) -> int:
         """Get remaining API calls for today."""
@@ -162,16 +163,30 @@ class EODHDDownloader:
             self._progress_file.unlink()
 
     def _is_stage_complete(self, stage: str) -> bool:
-        """Check if a download stage is already complete (final files exist)."""
+        """Check if a download stage is already complete.
+
+        A stage is complete only if:
+        1. Final files exist AND
+        2. No partial/progress files exist (indicating incomplete download)
+        """
         if stage == "prices":
-            return (self.output_dir / EODHD_FILES["prices"]).exists()
+            final_exists = (self.output_dir / EODHD_FILES["prices"]).exists()
+            partial_exists = (self.output_dir / "prices_partial.parquet").exists()
+            # Also check progress file for incomplete price downloads
+            progress = self._load_progress()
+            has_pending_prices = bool(progress.get("completed_symbols", {}).get("prices", []))
+            return final_exists and not partial_exists and not has_pending_prices
         elif stage == "fundamentals":
-            # Check if any of the fundamental files exist
-            return (
+            final_exists = (
                 (self.output_dir / EODHD_FILES["income"]).exists() or
                 (self.output_dir / EODHD_FILES["balance"]).exists() or
                 (self.output_dir / EODHD_FILES["cashflow"]).exists()
             )
+            partial_exists = (self.output_dir / "fundamentals_partial.parquet").exists()
+            # Check progress file - if there are completed symbols tracked, download is incomplete
+            progress = self._load_progress()
+            has_pending_fundamentals = bool(progress.get("completed_symbols", {}).get("fundamentals", []))
+            return final_exists and not partial_exists and not has_pending_fundamentals
         elif stage == "macro":
             return (self.output_dir / EODHD_FILES["macro"]).exists()
         elif stage == "companies":
@@ -703,6 +718,17 @@ class EODHDDownloader:
         logger.info(f"Downloaded {len(fundamentals_df)} quarterly fundamental records")
         logger.info(f"Extracted company info for {len(companies_df)} companies")
 
+        # Check if download was incomplete (hit API limit)
+        if len(completed) < len(symbols):
+            logger.warning(
+                f"Download incomplete: {len(completed)}/{len(symbols)} symbols. "
+                f"Run with --resume to continue."
+            )
+            # Mark as incomplete by keeping progress file
+            self._download_incomplete = True
+        else:
+            self._download_incomplete = False
+
         return fundamentals_df, companies_df
 
     def _save_incremental_fundamentals(
@@ -1094,8 +1120,12 @@ class EODHDDownloader:
         outputs["metadata"] = metadata_path
 
         # Clean up progress file on successful completion
-        if not errors:
+        # Don't clear if download was incomplete (hit API limit)
+        download_incomplete = getattr(self, '_download_incomplete', False)
+        if not errors and not download_incomplete:
             self._clear_progress()
+        elif download_incomplete:
+            logger.warning("Progress file preserved - download incomplete. Run with --resume to continue.")
 
         logger.info("\n" + "=" * 60)
         logger.info(f"Download complete.")

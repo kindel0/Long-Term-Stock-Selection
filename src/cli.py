@@ -35,6 +35,17 @@ setup_logging()
 logger = logging.getLogger(__name__)
 
 
+def load_panel_data(filepath: str) -> pd.DataFrame:
+    """Load panel data from CSV or Parquet file based on extension."""
+    filepath = Path(filepath)
+    if filepath.suffix.lower() in [".parquet", ".pq"]:
+        df = pd.read_parquet(filepath)
+    else:
+        df = pd.read_csv(filepath)
+    df["public_date"] = pd.to_datetime(df["public_date"])
+    return df
+
+
 @click.group()
 @click.option("--verbose", "-v", is_flag=True, help="Enable verbose output")
 def cli(verbose):
@@ -217,8 +228,7 @@ def backtest(data, rebuild_panel, simfin_dir, start, end, capital, stocks, min_c
 
     # Load data
     click.echo("\nLoading data...")
-    df = pd.read_csv(data)
-    df["public_date"] = pd.to_datetime(df["public_date"])
+    df = load_panel_data(data)
     click.echo(f"Loaded {len(df):,} rows")
 
     # Initialize model and engine
@@ -366,8 +376,7 @@ def paper_trade(data, stocks, capital, dry_run, algorithm, roe_weight):
 
     # Load panel data
     click.echo(f"\nLoading data: {data}")
-    df = pd.read_csv(data)
-    df["public_date"] = pd.to_datetime(df["public_date"])
+    df = load_panel_data(data)
 
     latest_date = df["public_date"].max()
     click.echo(f"Latest data: {latest_date.date()}")
@@ -537,8 +546,7 @@ def live_trade(data, stocks, confirm, algorithm, roe_weight):
 
     # Load panel data
     click.echo(f"\nLoading data: {data}")
-    df = pd.read_csv(data)
-    df["public_date"] = pd.to_datetime(df["public_date"])
+    df = load_panel_data(data)
 
     latest_date = df["public_date"].max()
     click.echo(f"Latest data: {latest_date.date()}")
@@ -905,8 +913,7 @@ def validate_data(data):
     click.echo("VALIDATING DATA")
     click.echo("=" * 60)
 
-    df = pd.read_csv(data)
-    df["public_date"] = pd.to_datetime(df["public_date"])
+    df = load_panel_data(data)
 
     validator = DataValidator()
     is_valid, report = validator.validate_panel(df)

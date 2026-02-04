@@ -496,7 +496,9 @@ class EODHDLoader(DataLoader):
 
         # Pivot indicators to columns
         if "indicator" in df.columns and "Value" in df.columns:
-            df["Date"] = pd.to_datetime(df.get("Date") or df.get("date"))
+            # Find date column
+            date_col = "Date" if "Date" in df.columns else "date"
+            df["Date"] = pd.to_datetime(df[date_col])
             df = df.pivot(index="Date", columns="indicator", values="Value")
             df = df.reset_index()
             df = df.rename(columns={"Date": "public_date"})

@@ -119,10 +119,18 @@ class PanelBuilder:
             logger.info("Shares Outstanding not in price data, loading from fundamentals...")
             shares_df = self.loader.get_shares_outstanding()
             if not shares_df.empty:
-                # Merge shares outstanding with prices
+                # Drop existing empty Shares Outstanding column if present to avoid suffix issues
+                if "Shares Outstanding" in px.columns:
+                    px = px.drop(columns=["Shares Outstanding"])
+
+                # Merge shares outstanding with prices using merge_asof
+                # Note: merge_asof requires both DataFrames to be sorted by the 'on' key (Date)
+                # even when using 'by' parameter for grouping
                 shares_df = shares_df.rename(columns={"Ticker": "ticker_shares", "Date": "date_shares"})
-                px = px.sort_values(["Ticker", "Date"])
-                shares_df = shares_df.sort_values(["ticker_shares", "date_shares"])
+
+                # Sort both by the merge key (Date) for merge_asof to work correctly
+                px = px.sort_values("Date")
+                shares_df = shares_df.sort_values("date_shares")
 
                 # Use merge_asof to get most recent shares outstanding for each price date
                 px = pd.merge_asof(

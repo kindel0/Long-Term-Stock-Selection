@@ -79,6 +79,8 @@ EODHD_BALANCE_MAPPING: Dict[str, str] = {
     # Shares outstanding for market cap calculation
     "commonStockSharesOutstanding": "Shares Outstanding",
     "sharesOutstanding": "Shares Outstanding",  # Alternate field name
+    # CapEx (EODHD stores this in balance sheet data, not cashflow)
+    "capitalExpenditures": "Change in Fixed Assets & Intangibles",
 }
 
 EODHD_CASHFLOW_MAPPING: Dict[str, str] = {
@@ -200,13 +202,15 @@ def map_columns(df, mapping: Dict[str, str], keep_unmapped: bool = True):
     """
     Map DataFrame columns using a mapping dictionary.
 
+    Handles duplicate target names by combining columns (first non-null value wins).
+
     Args:
         df: DataFrame to map
         mapping: Dict of old_name -> new_name
         keep_unmapped: Whether to keep columns not in mapping
 
     Returns:
-        DataFrame with renamed columns
+        DataFrame with renamed columns (no duplicates)
     """
     import pandas as pd
 
@@ -223,6 +227,34 @@ def map_columns(df, mapping: Dict[str, str], keep_unmapped: bool = True):
     if not keep_unmapped:
         mapped_cols = list(rename_dict.values())
         result = result[[c for c in result.columns if c in mapped_cols]]
+
+    # Handle duplicate column names by combining (first non-null wins)
+    from collections import Counter
+    col_counts = Counter(result.columns)
+    duplicates = {k for k, v in col_counts.items() if v > 1}
+
+    if duplicates:
+        # Get unique column names in order
+        seen = set()
+        unique_cols = []
+        for col in result.columns:
+            if col not in seen:
+                unique_cols.append(col)
+                seen.add(col)
+
+        # For each unique column, combine duplicates
+        new_data = {}
+        for col in unique_cols:
+            if col in duplicates:
+                # Get all columns with this name
+                dup_df = result.loc[:, result.columns == col]
+                # Combine: use first non-null value across duplicates
+                combined = dup_df.bfill(axis=1).iloc[:, 0]
+                new_data[col] = combined
+            else:
+                new_data[col] = result[col]
+
+        result = pd.DataFrame(new_data)
 
     return result
 

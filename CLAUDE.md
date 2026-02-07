@@ -10,12 +10,27 @@ ML-based long-term stock selection system using Random Forest, based on Wynne (2
 
 ### Build Panel Dataset
 ```bash
-# SimFin (default)
+# SimFin (default data source, macro from FRED)
 python -m src.cli build-panel --simfin-dir data/simfin --output data/simfin_panel.csv
 
-# EODHD (requires download-eodhd first)
+# EODHD (macro source auto-defaults to eodhd)
 python -m src.cli build-panel --data-source eodhd --output data/panels/eodhd_panel.parquet --format parquet
+
+# Override macro source explicitly
+python -m src.cli build-panel --data-source eodhd --macro-source fred --format parquet
 ```
+
+#### build-panel options
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--data-source` | `simfin` | Data source: `simfin` or `eodhd` |
+| `--macro-source` | matches `--data-source` | Macro data: `fred` (for simfin) or `eodhd` (for eodhd) |
+| `--simfin-dir` | `data/simfin` | Path to SimFin CSV files |
+| `--format` | `csv` | Output format: `csv` or `parquet` |
+| `--output` / `-o` | `data/simfin_panel.csv` | Output file path |
+| `--add-macro/--no-macro` | `--add-macro` | Include macro features |
+| `--filters/--no-filters` | `--filters` | Apply quality filters |
+| `--winsorize/--no-winsorize` | `--winsorize` | Winsorize ratio columns |
 
 ### Download EODHD Data
 ```bash

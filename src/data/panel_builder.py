@@ -680,12 +680,6 @@ class PanelBuilder:
         rebuild: bool = False,
     ) -> pd.DataFrame:
         """Add macroeconomic features from FRED."""
-        try:
-            from pandas_datareader import data as pdr
-        except ImportError:
-            logger.warning("pandas_datareader not installed, skipping macro features")
-            return panel
-
         cache_csv = cache_csv or DATA_DIR / "fred_macro_cache.csv"
         macro = None
 
@@ -706,19 +700,24 @@ class PanelBuilder:
             end = panel["public_date"].max()
 
             try:
-                fed = pdr.DataReader("FEDFUNDS", "fred", start, end)
-                dgs10 = pdr.DataReader("DGS10", "fred", start, end)
-                cpi = pdr.DataReader("USACPIALLMINMEI", "fred", start, end)
-                gdp = pdr.DataReader("GDP", "fred", start, end)
-
-                # Convert to month-end and forward-fill
-                for df in [fed, dgs10, cpi, gdp]:
+                def _fetch_fred(series_id, start, end):
+                    """Fetch a single FRED series as a DataFrame."""
+                    url = (
+                        f"https://fred.stlouisfed.org/graph/fredgraph.csv"
+                        f"?id={series_id}"
+                        f"&cosd={start.strftime('%Y-%m-%d')}"
+                        f"&coed={end.strftime('%Y-%m-%d')}"
+                    )
+                    df = pd.read_csv(url, index_col=0, parse_dates=True)
                     df.index = pd.to_datetime(df.index) + pd.offsets.MonthEnd(0)
+                    # FRED uses '.' for missing values
+                    df = df.apply(pd.to_numeric, errors="coerce")
+                    return df.ffill()
 
-                fed = fed.ffill()
-                dgs10 = dgs10.ffill()
-                cpi = cpi.ffill()
-                gdp = gdp.ffill()
+                fed = _fetch_fred("FEDFUNDS", start, end)
+                dgs10 = _fetch_fred("DGS10", start, end)
+                cpi = _fetch_fred("USACPIALLMINMEI", start, end)
+                gdp = _fetch_fred("GDP", start, end)
 
                 # Calculate rates of change
                 cpi_series = cpi.iloc[:, 0]

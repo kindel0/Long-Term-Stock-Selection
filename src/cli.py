@@ -807,8 +807,8 @@ def tax_report(year, format, output):
 @click.option(
     "--macro-source",
     type=click.Choice(MACRO_SOURCES),
-    default=DEFAULT_MACRO_SOURCE,
-    help="Macro data source: fred (default) or eodhd",
+    default=None,
+    help="Macro data source: defaults to match --data-source (fred for simfin, eodhd for eodhd)",
 )
 @click.option("--add-macro/--no-macro", default=True, help="Add macro features")
 @click.option("--filters/--no-filters", default=True, help="Apply quality filters")
@@ -843,6 +843,10 @@ def build_panel(simfin_dir, data_source, macro_source, add_macro, filters, winso
     click.echo("=" * 60)
     click.echo("BUILDING PANEL DATASET")
     click.echo("=" * 60)
+
+    # Default macro source to match data source
+    if macro_source is None:
+        macro_source = "eodhd" if data_source == "eodhd" else DEFAULT_MACRO_SOURCE
 
     click.echo(f"Data source: {data_source}")
     click.echo(f"Macro source: {macro_source}")

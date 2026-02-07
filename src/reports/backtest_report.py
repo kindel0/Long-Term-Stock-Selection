@@ -275,6 +275,7 @@ class BacktestReporter:
                 "std_stock_return": float(np.std(all_stock_returns)) if all_stock_returns else 0,
                 "pct_positive": sum(1 for r in all_stock_returns if r > 0) / len(all_stock_returns) if all_stock_returns else 0,
             },
+            "yearly": self._calc_yearly_returns(result),
         }
 
         summary_path = self.output_dir / "summary.json"
@@ -302,6 +303,26 @@ class BacktestReporter:
             "information_ratio": float(sp.information_ratio),
             "win_rate": float(sp.win_rate),
             "avg_excess_return": float(np.mean(excess_returns)) if excess_returns else 0,
+        }
+
+    def _calc_yearly_returns(self, result) -> Dict[str, Any]:
+        """Aggregate period returns into annual returns."""
+        yearly = {}
+        for p in result.periods:
+            year = p.date.year
+            if year not in yearly:
+                yearly[year] = {"port": 1.0, "univ": 1.0, "sp500": 1.0}
+            yearly[year]["port"] *= (1 + p.portfolio_return)
+            yearly[year]["univ"] *= (1 + p.benchmark_return)
+            yearly[year]["sp500"] *= (1 + p.sp500_return)
+
+        return {
+            str(year): {
+                "portfolio": float(v["port"] - 1),
+                "universe": float(v["univ"] - 1),
+                "sp500": float(v["sp500"] - 1),
+            }
+            for year, v in sorted(yearly.items())
         }
 
     def save_charts(self, result) -> List[Path]:
@@ -618,6 +639,53 @@ class BacktestReporter:
             </div>
         </div>
 
+        <h2>Year-by-Year Comparison</h2>
+        <table>
+            <tr>
+                <th>Year</th>
+                <th>Portfolio</th>
+                <th>Universe</th>
+                <th>S&P 500</th>
+                <th>vs Universe</th>
+                <th>vs S&P 500</th>
+            </tr>
+"""
+        # Aggregate period returns into annual returns
+        yearly = {}
+        for p in result.periods:
+            year = p.date.year
+            if year not in yearly:
+                yearly[year] = {"port": 1.0, "univ": 1.0, "sp500": 1.0}
+            yearly[year]["port"] *= (1 + p.portfolio_return)
+            yearly[year]["univ"] *= (1 + p.benchmark_return)
+            yearly[year]["sp500"] *= (1 + p.sp500_return)
+
+        for year in sorted(yearly):
+            port = (yearly[year]["port"] - 1) * 100
+            univ = (yearly[year]["univ"] - 1) * 100
+            sp_ret = (yearly[year]["sp500"] - 1) * 100
+            vs_univ = port - univ
+            vs_sp = port - sp_ret
+
+            port_cls = "positive" if port > 0 else "negative"
+            univ_cls = "positive" if univ > 0 else "negative"
+            sp_cls = "positive" if sp_ret > 0 else "negative"
+            vs_univ_cls = "positive" if vs_univ > 0 else "negative"
+            vs_sp_cls = "positive" if vs_sp > 0 else "negative"
+
+            html += (
+                '            <tr>'
+                f'<td>{year}</td>'
+                f'<td class="{port_cls}">{port:.1f}%</td>'
+                f'<td class="{univ_cls}">{univ:.1f}%</td>'
+                f'<td class="{sp_cls}">{sp_ret:.1f}%</td>'
+                f'<td class="{vs_univ_cls}">{vs_univ:+.1f}%</td>'
+                f'<td class="{vs_sp_cls}">{vs_sp:+.1f}%</td>'
+                '</tr>\n'
+            )
+
+        html += """        </table>
+
         <h2>Charts</h2>
         <div class="chart-grid">
             <img src="charts/cumulative_returns.png" alt="Cumulative Returns">
@@ -779,6 +847,32 @@ class BacktestReporter:
             print(f"Win Rate:          {sp.win_rate * 100:>8.1f}%")
         else:
             print("(Data unavailable)")
+
+        # Year-by-year comparison
+        if result.periods:
+            yearly = {}
+            for p in result.periods:
+                year = p.date.year
+                if year not in yearly:
+                    yearly[year] = {"port": 1.0, "univ": 1.0, "sp500": 1.0}
+                yearly[year]["port"] *= (1 + p.portfolio_return)
+                yearly[year]["univ"] *= (1 + p.benchmark_return)
+                yearly[year]["sp500"] *= (1 + p.sp500_return)
+
+            print("\n--- YEAR-BY-YEAR COMPARISON ---")
+            print(f"{'Year':>6}  {'Portfolio':>10}  {'Universe':>10}  {'S&P 500':>10}  {'vs Univ':>10}  {'vs S&P':>10}")
+            print("-" * 70)
+
+            for year in sorted(yearly):
+                port = (yearly[year]["port"] - 1) * 100
+                univ = (yearly[year]["univ"] - 1) * 100
+                sp_ret = (yearly[year]["sp500"] - 1) * 100
+                vs_univ = port - univ
+                vs_sp = port - sp_ret
+                print(
+                    f"{year:>6}  {port:>9.1f}%  {univ:>9.1f}%  {sp_ret:>9.1f}%"
+                    f"  {vs_univ:>+9.1f}%  {vs_sp:>+9.1f}%"
+                )
 
         print("=" * 70)
         print(f"\nReport saved to: {self.output_dir}")

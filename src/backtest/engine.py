@@ -678,4 +678,38 @@ class BacktestEngine:
         else:
             print("(Data unavailable)")
 
+        # Year-by-year comparison
+        self._print_yearly_comparison(result)
+
         print("=" * 70)
+
+    def _print_yearly_comparison(self, result: BacktestResult) -> None:
+        """Print year-by-year return comparison table."""
+        if not result.periods:
+            return
+
+        # Aggregate period returns into annual returns by compounding
+        yearly = {}
+        for p in result.periods:
+            year = p.date.year
+            if year not in yearly:
+                yearly[year] = {"port": 1.0, "univ": 1.0, "sp500": 1.0}
+            yearly[year]["port"] *= (1 + p.portfolio_return)
+            yearly[year]["univ"] *= (1 + p.benchmark_return)
+            yearly[year]["sp500"] *= (1 + p.sp500_return)
+
+        print("\n--- YEAR-BY-YEAR COMPARISON ---")
+        print(f"{'Year':>6}  {'Portfolio':>10}  {'Universe':>10}  {'S&P 500':>10}  {'vs Univ':>10}  {'vs S&P':>10}")
+        print("-" * 70)
+
+        for year in sorted(yearly):
+            port = (yearly[year]["port"] - 1) * 100
+            univ = (yearly[year]["univ"] - 1) * 100
+            sp = (yearly[year]["sp500"] - 1) * 100
+            vs_univ = port - univ
+            vs_sp = port - sp
+
+            print(
+                f"{year:>6}  {port:>9.1f}%  {univ:>9.1f}%  {sp:>9.1f}%"
+                f"  {vs_univ:>+9.1f}%  {vs_sp:>+9.1f}%"
+            )

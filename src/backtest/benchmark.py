@@ -87,8 +87,10 @@ class BenchmarkManager:
 
             # Fetch extra buffer for safety
             fetch_start = start - pd.DateOffset(months=6)
+            # Use total return index (includes reinvested dividends)
+            # for fair comparison against portfolio returns
             sp500 = yf.download(
-                "^GSPC", start=fetch_start, end=end, progress=False
+                "^SP500TR", start=fetch_start, end=end, progress=False
             )
 
             if sp500.empty:

@@ -50,9 +50,10 @@ class BacktestResult:
     """Complete backtest result."""
 
     periods: List[PeriodResult]
-    metrics: PerformanceMetrics
-    benchmark_metrics: PerformanceMetrics  # Universe benchmark
-    sp500_metrics: PerformanceMetrics = None  # S&P 500 benchmark
+    metrics: PerformanceMetrics  # Portfolio vs Universe benchmark
+    metrics_vs_sp500: PerformanceMetrics = None  # Portfolio vs S&P 500
+    benchmark_metrics: PerformanceMetrics = None  # Universe benchmark standalone
+    sp500_metrics: PerformanceMetrics = None  # S&P 500 standalone
 
     # Time series
     portfolio_returns: pd.Series = field(default_factory=pd.Series)
@@ -478,11 +479,10 @@ class BacktestEngine:
         target_col: str,
     ) -> float:
         """
-        Calculate benchmark return from SimFin data or yfinance fallback.
+        Calculate universe benchmark return from panel data.
 
-        Priority:
-        1. SimFin data (cap-weighted or equal-weighted based on settings)
-        2. yfinance S&P 500 (only if benchmark_source='yfinance' or SimFin fails)
+        Always computed from the filtered universe (e.g. Mid Cap+),
+        independent of the S&P 500 benchmark.
 
         Args:
             test_df: Test period data with MthCap column
@@ -492,61 +492,37 @@ class BacktestEngine:
         Returns:
             Benchmark return as decimal
         """
-        benchmark_source = getattr(self, "_benchmark_source", "simfin")
         benchmark_weighting = getattr(self, "_benchmark_weighting", "cap_weighted")
-
-        # Try SimFin-based benchmark first (unless yfinance explicitly requested)
-        if benchmark_source == "simfin":
-            valid_returns = y_test.dropna()
-
-            if len(valid_returns) > 0:
-                if benchmark_weighting == "cap_weighted" and "MthCap" in test_df.columns:
-                    # Cap-weighted average
-                    weights = test_df.loc[valid_returns.index, "MthCap"]
-                    weights = weights.fillna(0)
-                    total_weight = weights.sum()
-
-                    if total_weight > 0:
-                        benchmark_return = (valid_returns * weights).sum() / total_weight
-                        logger.debug(
-                            f"SimFin cap-weighted benchmark: {benchmark_return:.4f} "
-                            f"({len(valid_returns)} stocks)"
-                        )
-                        return benchmark_return
-
-                # Equal-weighted fallback
-                benchmark_return = valid_returns.mean()
-                logger.debug(
-                    f"SimFin equal-weighted benchmark: {benchmark_return:.4f} "
-                    f"({len(valid_returns)} stocks)"
-                )
-                return benchmark_return
-
-        # yfinance fallback (S&P 500)
-        if target_col == "1yr_return":
-            holding_months = 12
-        else:
-            holding_months = 3
-
-        test_date = test_df["public_date"].iloc[0] if len(test_df) > 0 else None
-        if test_date is not None:
-            end_date = test_date + pd.DateOffset(months=holding_months)
-            benchmark_return = self.benchmark.get_return(test_date, end_date)
-
-            if benchmark_return is not None:
-                logger.debug(f"yfinance S&P 500 benchmark: {benchmark_return:.4f}")
-                return benchmark_return
-
-        # Final fallback: equal-weighted SimFin
         valid_returns = y_test.dropna()
+
         if len(valid_returns) > 0:
+            if benchmark_weighting == "cap_weighted" and "MthCap" in test_df.columns:
+                weights = test_df.loc[valid_returns.index, "MthCap"].copy()
+                weights = weights.fillna(0)
+                # Clip outlier market caps at 99.5th percentile to prevent
+                # bad data (e.g. $100T+ entries) from dominating the benchmark
+                cap_clip = weights.quantile(0.995)
+                if cap_clip > 0:
+                    weights = weights.clip(upper=cap_clip)
+                total_weight = weights.sum()
+
+                if total_weight > 0:
+                    benchmark_return = (valid_returns * weights).sum() / total_weight
+                    logger.debug(
+                        f"Universe cap-weighted benchmark: {benchmark_return:.4f} "
+                        f"({len(valid_returns)} stocks)"
+                    )
+                    return benchmark_return
+
+            # Equal-weighted fallback
             benchmark_return = valid_returns.mean()
-            logger.warning(
-                f"Using equal-weighted fallback benchmark: {benchmark_return:.4f}"
+            logger.debug(
+                f"Universe equal-weighted benchmark: {benchmark_return:.4f} "
+                f"({len(valid_returns)} stocks)"
             )
             return benchmark_return
 
-        logger.warning("No benchmark data available, returning 0")
+        logger.warning("No universe benchmark data available, returning 0")
         return 0.0
 
     def _calculate_sp500_return(
@@ -588,6 +564,7 @@ class BacktestEngine:
             return BacktestResult(
                 periods=[],
                 metrics=empty_metrics,
+                metrics_vs_sp500=empty_metrics,
                 benchmark_metrics=empty_metrics,
                 sp500_metrics=empty_metrics,
             )
@@ -620,6 +597,9 @@ class BacktestEngine:
         metrics = calculate_metrics(
             port_returns, bench_returns, periods_per_year=periods_per_year
         )
+        metrics_vs_sp500 = calculate_metrics(
+            port_returns, sp500_returns, periods_per_year=periods_per_year
+        )
         bench_metrics = calculate_metrics(
             bench_returns, periods_per_year=periods_per_year
         )
@@ -634,6 +614,7 @@ class BacktestEngine:
         return BacktestResult(
             periods=periods,
             metrics=metrics,
+            metrics_vs_sp500=metrics_vs_sp500,
             benchmark_metrics=bench_metrics,
             sp500_metrics=sp500_metrics,
             portfolio_returns=port_returns,
@@ -668,12 +649,16 @@ class BacktestEngine:
         b = result.benchmark_metrics
         print(f"Total Return:      {b.total_return * 100:>8.2f}%")
         print(f"Annualized Return: {b.annualized_return * 100:>8.2f}%")
+        print(f"Sharpe Ratio:      {b.sharpe_ratio:>8.2f}")
+        print(f"Max Drawdown:      {b.max_drawdown * 100:>8.2f}%")
 
         print("\n--- S&P 500 ---")
         s = result.sp500_metrics
         if s is not None:
             print(f"Total Return:      {s.total_return * 100:>8.2f}%")
             print(f"Annualized Return: {s.annualized_return * 100:>8.2f}%")
+            print(f"Sharpe Ratio:      {s.sharpe_ratio:>8.2f}")
+            print(f"Max Drawdown:      {s.max_drawdown * 100:>8.2f}%")
         else:
             print("(Data unavailable)")
 
@@ -683,15 +668,14 @@ class BacktestEngine:
         print(f"Excess Return:     {m.excess_return * 100:>8.2f}%")
         print(f"Win Rate:          {m.win_rate * 100:>8.1f}%")
 
-        # Calculate vs S&P 500
-        if s is not None and len(result.sp500_returns) > 0:
-            port_total = result.cumulative_returns.iloc[-1] - 1
-            sp500_total = result.sp500_cumulative.iloc[-1] - 1
-            excess_vs_sp500 = port_total - sp500_total
-            wins_vs_sp500 = (result.portfolio_returns > result.sp500_returns).sum()
-            win_rate_vs_sp500 = wins_vs_sp500 / len(result.portfolio_returns)
-            print("\n--- VS S&P 500 ---")
-            print(f"Excess Return:     {excess_vs_sp500 * 100:>8.2f}%")
-            print(f"Win Rate:          {win_rate_vs_sp500 * 100:>8.1f}%")
+        print("\n--- VS S&P 500 ---")
+        sp = result.metrics_vs_sp500
+        if sp is not None:
+            print(f"Alpha:             {sp.alpha * 100:>8.2f}%")
+            print(f"Beta:              {sp.beta:>8.2f}")
+            print(f"Excess Return:     {sp.excess_return * 100:>8.2f}%")
+            print(f"Win Rate:          {sp.win_rate * 100:>8.1f}%")
+        else:
+            print("(Data unavailable)")
 
         print("=" * 70)

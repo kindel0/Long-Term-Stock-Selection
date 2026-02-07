@@ -271,7 +271,7 @@ BACKTEST_DEFAULTS: Dict[str, Any] = {
     "n_stocks": 15,             # Number of stocks in portfolio
     "initial_capital": 30000,   # EUR
     "min_market_cap": "Mid Cap",
-    "start_year": 2017,
+    "start_year": 2005,
     "end_year": 2024,
 }
 

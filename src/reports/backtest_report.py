@@ -244,11 +244,15 @@ class BacktestReporter:
                 "total_return": float(b.total_return),
                 "annualized_return": float(b.annualized_return),
                 "volatility": float(b.volatility),
+                "sharpe_ratio": float(b.sharpe_ratio),
+                "max_drawdown": float(b.max_drawdown),
             },
             "sp500": {
                 "total_return": float(result.sp500_metrics.total_return) if result.sp500_metrics else None,
                 "annualized_return": float(result.sp500_metrics.annualized_return) if result.sp500_metrics else None,
                 "volatility": float(result.sp500_metrics.volatility) if result.sp500_metrics else None,
+                "sharpe_ratio": float(result.sp500_metrics.sharpe_ratio) if result.sp500_metrics else None,
+                "max_drawdown": float(result.sp500_metrics.max_drawdown) if result.sp500_metrics else None,
             },
             "vs_universe_benchmark": {
                 "alpha": float(m.alpha),
@@ -282,21 +286,21 @@ class BacktestReporter:
 
     def _calc_vs_sp500_stats(self, result) -> Dict[str, Any]:
         """Calculate comparison stats vs S&P 500."""
-        if result.sp500_metrics is None or len(result.sp500_returns) == 0:
+        sp = result.metrics_vs_sp500
+        if sp is None or result.sp500_metrics is None or len(result.sp500_returns) == 0:
             return {"available": False}
 
         excess_returns = [
             p.portfolio_return - p.sp500_return for p in result.periods
         ]
-        win_periods = sum(1 for e in excess_returns if e > 0)
-
-        port_total = result.cumulative_returns.iloc[-1] - 1
-        sp500_total = result.sp500_cumulative.iloc[-1] - 1
 
         return {
             "available": True,
-            "excess_return": float(port_total - sp500_total),
-            "win_rate": win_periods / len(result.periods) if result.periods else 0,
+            "alpha": float(sp.alpha),
+            "beta": float(sp.beta),
+            "excess_return": float(sp.excess_return),
+            "information_ratio": float(sp.information_ratio),
+            "win_rate": float(sp.win_rate),
             "avg_excess_return": float(np.mean(excess_returns)) if excess_returns else 0,
         }
 
@@ -463,10 +467,14 @@ class BacktestReporter:
         """
         m = result.metrics
         b = result.benchmark_metrics
+        s = result.sp500_metrics
+        sp = result.metrics_vs_sp500
 
         # Calculate stats
         excess_returns = [p.portfolio_return - p.benchmark_return for p in result.periods]
         win_rate = sum(1 for e in excess_returns if e > 0) / len(excess_returns) if excess_returns else 0
+        excess_vs_sp500 = [p.portfolio_return - p.sp500_return for p in result.periods]
+        win_rate_sp500 = sum(1 for e in excess_vs_sp500 if e > 0) / len(excess_vs_sp500) if excess_vs_sp500 else 0
 
         html = f"""<!DOCTYPE html>
 <html>
@@ -530,7 +538,47 @@ class BacktestReporter:
             </div>
         </div>
 
-        <h2>vs Benchmark</h2>
+        <h2>Universe Benchmark (Mid Cap+)</h2>
+        <div class="metrics-grid">
+            <div class="metric-card {'positive' if b.total_return > 0 else 'negative'}">
+                <div class="metric-value">{b.total_return * 100:.1f}%</div>
+                <div class="metric-label">Total Return</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-value">{b.annualized_return * 100:.1f}%</div>
+                <div class="metric-label">Annualized Return</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-value">{b.sharpe_ratio:.2f}</div>
+                <div class="metric-label">Sharpe Ratio</div>
+            </div>
+            <div class="metric-card negative">
+                <div class="metric-value">{b.max_drawdown * 100:.1f}%</div>
+                <div class="metric-label">Max Drawdown</div>
+            </div>
+        </div>
+
+        <h2>S&P 500</h2>
+        <div class="metrics-grid">
+            <div class="metric-card {'positive' if s.total_return > 0 else 'negative'}">
+                <div class="metric-value">{s.total_return * 100:.1f}%</div>
+                <div class="metric-label">Total Return</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-value">{s.annualized_return * 100:.1f}%</div>
+                <div class="metric-label">Annualized Return</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-value">{s.sharpe_ratio:.2f}</div>
+                <div class="metric-label">Sharpe Ratio</div>
+            </div>
+            <div class="metric-card negative">
+                <div class="metric-value">{s.max_drawdown * 100:.1f}%</div>
+                <div class="metric-label">Max Drawdown</div>
+            </div>
+        </div>
+
+        <h2>vs Universe Benchmark</h2>
         <div class="metrics-grid">
             <div class="metric-card {'positive' if m.excess_return > 0 else 'negative'}">
                 <div class="metric-value">{m.excess_return * 100:.1f}%</div>
@@ -550,6 +598,26 @@ class BacktestReporter:
             </div>
         </div>
 
+        <h2>vs S&P 500</h2>
+        <div class="metrics-grid">
+            <div class="metric-card {'positive' if sp.excess_return > 0 else 'negative'}">
+                <div class="metric-value">{sp.excess_return * 100:.1f}%</div>
+                <div class="metric-label">Excess Return (Annualized)</div>
+            </div>
+            <div class="metric-card {'positive' if sp.alpha > 0 else 'negative'}">
+                <div class="metric-value">{sp.alpha * 100:.1f}%</div>
+                <div class="metric-label">Alpha</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-value">{sp.beta:.2f}</div>
+                <div class="metric-label">Beta</div>
+            </div>
+            <div class="metric-card {'positive' if win_rate_sp500 > 0.5 else 'negative'}">
+                <div class="metric-value">{win_rate_sp500 * 100:.0f}%</div>
+                <div class="metric-label">Win Rate</div>
+            </div>
+        </div>
+
         <h2>Charts</h2>
         <div class="chart-grid">
             <img src="charts/cumulative_returns.png" alt="Cumulative Returns">
@@ -563,8 +631,10 @@ class BacktestReporter:
             <tr>
                 <th>Date</th>
                 <th>Return</th>
-                <th>Benchmark</th>
-                <th>Excess</th>
+                <th>Universe</th>
+                <th>S&P 500</th>
+                <th>vs Universe</th>
+                <th>vs S&P 500</th>
                 <th>Cumulative</th>
                 <th>Drawdown</th>
                 <th>Stocks</th>
@@ -579,14 +649,16 @@ class BacktestReporter:
             peak = max(peak, cumulative)
             drawdown = (peak - cumulative) / peak
 
-            excess = p.portfolio_return - p.benchmark_return
-            excess_class = "positive" if excess > 0 else "negative"
+            excess_univ = p.portfolio_return - p.benchmark_return
+            excess_sp = p.portfolio_return - p.sp500_return
 
             html += f"""            <tr>
                 <td>{p.date.strftime("%Y-%m-%d")}</td>
                 <td class="{'positive' if p.portfolio_return > 0 else 'negative'}">{p.portfolio_return * 100:.1f}%</td>
                 <td>{p.benchmark_return * 100:.1f}%</td>
-                <td class="{excess_class}">{excess * 100:.1f}%</td>
+                <td>{p.sp500_return * 100:.1f}%</td>
+                <td class="{'positive' if excess_univ > 0 else 'negative'}">{excess_univ * 100:.1f}%</td>
+                <td class="{'positive' if excess_sp > 0 else 'negative'}">{excess_sp * 100:.1f}%</td>
                 <td>{(cumulative - 1) * 100:.1f}%</td>
                 <td class="negative">{drawdown * 100:.1f}%</td>
                 <td>{p.n_stocks}</td>
@@ -661,6 +733,8 @@ class BacktestReporter:
         """Print summary to console."""
         m = result.metrics
         b = result.benchmark_metrics
+        s = result.sp500_metrics
+        sp = result.metrics_vs_sp500
 
         print("\n" + "=" * 70)
         print("BACKTEST SUMMARY")
@@ -676,15 +750,35 @@ class BacktestReporter:
         print(f"Sharpe Ratio:      {m.sharpe_ratio:>8.2f}")
         print(f"Max Drawdown:      {m.max_drawdown * 100:>8.2f}%")
 
-        print("\n--- BENCHMARK ---")
+        print("\n--- UNIVERSE BENCHMARK (Mid Cap+) ---")
         print(f"Total Return:      {b.total_return * 100:>8.2f}%")
         print(f"Annualized Return: {b.annualized_return * 100:>8.2f}%")
+        print(f"Sharpe Ratio:      {b.sharpe_ratio:>8.2f}")
+        print(f"Max Drawdown:      {b.max_drawdown * 100:>8.2f}%")
 
-        print("\n--- VS BENCHMARK ---")
+        print("\n--- S&P 500 ---")
+        if s is not None:
+            print(f"Total Return:      {s.total_return * 100:>8.2f}%")
+            print(f"Annualized Return: {s.annualized_return * 100:>8.2f}%")
+            print(f"Sharpe Ratio:      {s.sharpe_ratio:>8.2f}")
+            print(f"Max Drawdown:      {s.max_drawdown * 100:>8.2f}%")
+        else:
+            print("(Data unavailable)")
+
+        print("\n--- VS UNIVERSE BENCHMARK ---")
         print(f"Alpha:             {m.alpha * 100:>8.2f}%")
         print(f"Beta:              {m.beta:>8.2f}")
         print(f"Excess Return:     {m.excess_return * 100:>8.2f}%")
         print(f"Win Rate:          {m.win_rate * 100:>8.1f}%")
+
+        print("\n--- VS S&P 500 ---")
+        if sp is not None:
+            print(f"Alpha:             {sp.alpha * 100:>8.2f}%")
+            print(f"Beta:              {sp.beta:>8.2f}")
+            print(f"Excess Return:     {sp.excess_return * 100:>8.2f}%")
+            print(f"Win Rate:          {sp.win_rate * 100:>8.1f}%")
+        else:
+            print("(Data unavailable)")
 
         print("=" * 70)
         print(f"\nReport saved to: {self.output_dir}")

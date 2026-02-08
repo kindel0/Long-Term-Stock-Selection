@@ -383,6 +383,16 @@ class BacktestEngine:
             )
             return None
 
+        # Skip end-of-data periods where most of the universe lacks forward returns
+        # (distinct from individual delistings which get the delist_return assumption)
+        n_valid_universe = test_df[target_col].notna().sum()
+        if n_valid_universe < len(test_df) * 0.5:
+            logger.warning(
+                f"Skipping {test_date.date()}: only {n_valid_universe}/{len(test_df)} "
+                f"stocks have valid {target_col} (likely end-of-data)"
+            )
+            return None
+
         # Prepare features
         feature_cols = self.model.prepare_features(train_df)
 

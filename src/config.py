@@ -272,7 +272,8 @@ BACKTEST_DEFAULTS: Dict[str, Any] = {
     "initial_capital": 30000,   # EUR
     "min_market_cap": "Mid Cap",
     "start_year": 2005,
-    "end_year": 2024,
+    "end_year": 2025,
+    "delist_return": -1.0,      # Assume -100% for delisted/NaN returns
 }
 
 # Map rebalancing frequency to appropriate training target
@@ -307,6 +308,14 @@ QUALITY_FILTERS: Dict[str, Any] = {
     "min_market_cap": 5e6,      # Minimum market cap
     "min_book_equity": 0,       # Positive book equity required
     "return_bounds": (-0.99, 10.0),  # Valid return range
+}
+
+# Cross-sectional outlier filter (applied to test candidates before selection)
+OUTLIER_FILTER: Dict[str, Any] = {
+    "enabled": True,
+    "z_threshold": 3.0,       # Features beyond 3σ flagged as outliers
+    "max_outlier_pct": 0.25,  # Exclude stock if >25% of features are outliers
+    "min_candidates": 50,     # Safety: never filter below 50 candidates
 }
 
 # =============================================================================

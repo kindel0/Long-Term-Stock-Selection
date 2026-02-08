@@ -22,6 +22,7 @@ from .metrics import PerformanceMetrics, calculate_metrics
 from ..config import (
     BACKTEST_DEFAULTS,
     MARKET_CAP_HIERARCHY,
+    OUTLIER_FILTER,
     REBALANCE_TO_TARGET,
     RESULTS_DIR,
 )
@@ -375,20 +376,10 @@ class BacktestEngine:
         train_df = data[train_mask].copy()
         test_df = data[test_mask].copy()
 
-        # Count stocks with valid forward returns
-        n_valid_returns = test_df[target_col].notna().sum()
-
         if len(train_df) < 500 or len(test_df) < n_stocks:
             logger.warning(
                 f"Insufficient data for {test_date.date()}: "
                 f"train={len(train_df)}, test={len(test_df)}"
-            )
-            return None
-
-        if n_valid_returns < n_stocks:
-            logger.warning(
-                f"Insufficient forward returns for {test_date.date()}: "
-                f"only {n_valid_returns} stocks have valid {target_col}"
             )
             return None
 
@@ -401,6 +392,7 @@ class BacktestEngine:
 
         X_test = test_df[feature_cols]
         y_test = test_df[target_col]
+        y_test_full = y_test.copy()  # Keep full universe for benchmark calc
         meta_test = test_df[["sector", "public_date", "TICKER", "MthCap"]]
 
         # Train model
@@ -414,6 +406,24 @@ class BacktestEngine:
         X_test_clean = X_test_clean[self.model.feature_columns]
         X_test_clean = X_test_clean.fillna(self.model.feature_medians_).fillna(0)
 
+        # Cross-sectional outlier filter: remove stocks with too many extreme features
+        if OUTLIER_FILTER.get("enabled", True):
+            keep_idx = self._filter_cross_sectional_outliers(
+                X_test_clean[self.model.feature_columns], test_date,
+                z_threshold=OUTLIER_FILTER["z_threshold"],
+                max_outlier_pct=OUTLIER_FILTER["max_outlier_pct"],
+                min_candidates=OUTLIER_FILTER["min_candidates"],
+            )
+            if len(keep_idx) < len(X_test_clean):
+                n_removed = len(X_test_clean) - len(keep_idx)
+                logger.info(
+                    f"{test_date.date()}: outlier filter removed {n_removed} "
+                    f"stocks ({len(keep_idx)} remaining)"
+                )
+                X_test_clean = X_test_clean.loc[keep_idx]
+                meta_test = meta_test.loc[keep_idx]
+                y_test = y_test.loc[keep_idx]
+
         # Add ROE column for factor weighting (if available in original data)
         if "roe" in test_df.columns and "roe" not in X_test_clean.columns:
             X_test_clean["roe"] = test_df.loc[X_test_clean.index, "roe"].values
@@ -426,21 +436,30 @@ class BacktestEngine:
         selected_indices = top_stocks.index
         selected_tickers = top_stocks["TICKER"].tolist() if "TICKER" in top_stocks.columns else []
 
-        # Get actual returns - create ticker-to-return mapping
-        actual_returns_series = y_test.loc[selected_indices]
-        portfolio_return = actual_returns_series.dropna().mean() if len(actual_returns_series.dropna()) > 0 else 0.0
+        # Get actual returns — fill NaN (delisted stocks) with delist assumption
+        delist_return = BACKTEST_DEFAULTS.get("delist_return", -1.0)
+        actual_returns_series = y_test.loc[selected_indices].copy()
+        n_nan = actual_returns_series.isna().sum()
+        if n_nan > 0:
+            nan_tickers = [t for t, idx in zip(selected_tickers, selected_indices)
+                           if pd.isna(y_test.loc[idx])]
+            logger.warning(
+                f"{test_date.date()}: {n_nan} delisted stock(s) assumed "
+                f"{delist_return:.0%}: {nan_tickers}"
+            )
+        actual_returns_series = actual_returns_series.fillna(delist_return)
+        portfolio_return = actual_returns_series.mean()
 
         # Map ticker to actual return
         actual_returns_dict = {}
         for idx, ticker in zip(selected_indices, selected_tickers):
             if idx in y_test.index:
                 ret = y_test.loc[idx]
-                if pd.notna(ret):
-                    actual_returns_dict[ticker] = float(ret)
+                actual_returns_dict[ticker] = float(ret) if pd.notna(ret) else delist_return
 
-        # Get benchmark returns
+        # Get benchmark returns (use full universe, not outlier-filtered)
         benchmark_return = self._calculate_benchmark_return(
-            test_df, y_test, target_col
+            test_df, y_test_full, target_col
         )
         sp500_return = self._calculate_sp500_return(test_date, target_col)
 
@@ -464,13 +483,49 @@ class BacktestEngine:
             portfolio_return=portfolio_return,
             benchmark_return=benchmark_return,
             sp500_return=sp500_return,
-            n_stocks=len(actual_returns_dict),
+            n_stocks=len(selected_tickers),
             selected_stocks=selected_tickers,
             predictions=dict(zip(selected_tickers, top_stocks["predicted_rank"].tolist())),
             actual_returns=actual_returns_dict,
             fees_paid=fees_paid,
             turnover=turnover,
         )
+
+    def _filter_cross_sectional_outliers(
+        self,
+        X: pd.DataFrame,
+        test_date: datetime,
+        z_threshold: float,
+        max_outlier_pct: float,
+        min_candidates: int,
+    ) -> pd.Index:
+        """
+        Filter stocks with too many cross-sectional outlier features.
+
+        For each stock, compute z-scores across all features. If more than
+        max_outlier_pct of features exceed z_threshold σ, exclude that stock.
+        Safety valve: never filter below min_candidates.
+
+        Returns:
+            Index of stocks to keep.
+        """
+        means = X.mean()
+        stds = X.std().replace(0, np.nan)
+        z_scores = (X - means).div(stds)
+        outlier_pct = (z_scores.abs() > z_threshold).sum(axis=1) / z_scores.shape[1]
+        is_outlier = outlier_pct > max_outlier_pct
+
+        # Safety valve: never filter below min_candidates
+        n_outliers = is_outlier.sum()
+        if len(X) - n_outliers < min_candidates:
+            n_to_exclude = max(0, len(X) - min_candidates)
+            if n_to_exclude > 0:
+                worst = outlier_pct.nlargest(n_to_exclude)
+                is_outlier = X.index.isin(worst.index)
+            else:
+                is_outlier = pd.Series(False, index=X.index)
+
+        return X.index[~is_outlier]
 
     def _calculate_benchmark_return(
         self,

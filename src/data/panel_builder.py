@@ -27,6 +27,7 @@ from ..config import (
     DEFAULT_MACRO_SOURCE,
 )
 from .base_loader import DataLoader
+from .column_mapping import is_us_domestic_ticker
 from .simfin_loader import SimFinLoader
 
 logger = logging.getLogger(__name__)
@@ -337,6 +338,17 @@ class PanelBuilder:
 
         # Drop duplicate ticker column
         out = out.drop(columns=["Ticker"], errors="ignore")
+
+        # Filter out foreign OTC / ADR tickers
+        if "TICKER" in out.columns:
+            domestic_mask = out["TICKER"].apply(is_us_domestic_ticker)
+            n_foreign = (~domestic_mask).sum()
+            if n_foreign > 0:
+                n_tickers = out.loc[~domestic_mask, "TICKER"].nunique()
+                out = out[domestic_mask]
+                logger.info(
+                    f"Excluded {n_tickers} foreign OTC/ADR tickers ({n_foreign} rows)"
+                )
 
         logger.info(f"Merged panel: {len(out)} rows")
         return out

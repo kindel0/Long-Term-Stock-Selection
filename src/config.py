@@ -273,7 +273,7 @@ BACKTEST_DEFAULTS: Dict[str, Any] = {
     "min_market_cap": "Mid Cap",
     "start_year": 2005,
     "end_year": 2025,
-    "delist_return": -1.0,      # Assume -100% for delisted/NaN returns
+    "delist_return": -0.30,     # Assume -30% for delisted/NaN returns (academic median)
 }
 
 # Map rebalancing frequency to appropriate training target

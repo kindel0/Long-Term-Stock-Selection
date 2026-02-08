@@ -346,6 +346,30 @@ def is_common_stock(security_type: str) -> bool:
     return False
 
 
+def is_us_domestic_ticker(ticker: str) -> bool:
+    """
+    Check if ticker represents a US-domestic stock.
+
+    Rejects OTC foreign ordinaries (ending in F), ADRs (ending in Y),
+    and preferred shares (ending in O) that EODHD mislabels as common stock.
+
+    Args:
+        ticker: Stock ticker symbol
+
+    Returns:
+        True if ticker looks like a US-domestic common stock
+    """
+    if not ticker or len(ticker) < 2:
+        return False
+
+    # 5-letter tickers ending in F/Y are OTC foreign/ADR
+    # (4-letter tickers like MSFY could be legitimate)
+    if len(ticker) >= 5 and ticker[-1] in ("F", "Y"):
+        return False
+
+    return True
+
+
 def is_financial_company(sector: str = None, industry: str = None) -> bool:
     """
     Check if company is in financial sector.

@@ -26,6 +26,7 @@ from ..config import (
     REBALANCE_TO_TARGET,
     RESULTS_DIR,
 )
+from ..data.column_mapping import is_us_domestic_ticker
 
 logger = logging.getLogger(__name__)
 
@@ -247,6 +248,18 @@ class BacktestEngine:
 
         # Sort
         data = data.sort_values(["TICKER", "public_date"])
+
+        # Filter out foreign OTC / ADR tickers (5+ chars ending in F or Y)
+        if "TICKER" in data.columns:
+            domestic_mask = data["TICKER"].apply(is_us_domestic_ticker)
+            n_foreign = (~domestic_mask).sum()
+            if n_foreign > 0:
+                n_tickers = data.loc[~domestic_mask, "TICKER"].nunique()
+                data = data[domestic_mask]
+                logger.info(
+                    f"Excluded {n_tickers} foreign OTC/ADR tickers "
+                    f"({n_foreign} rows)"
+                )
 
         # Ensure outcome_date exists for PIT filtering
         # Map target column to months forward

@@ -30,6 +30,7 @@ from .column_mapping import (
     EODHD_CASHFLOW_MAPPING,
     EODHD_COMPANY_MAPPING,
     is_common_stock,
+    is_us_domestic_ticker,
     map_columns,
 )
 
@@ -965,6 +966,17 @@ class EODHDDownloader:
         if common_stocks_only and "Type" in symbols_df.columns:
             symbols_df = symbols_df[symbols_df["Type"].apply(is_common_stock)]
             logger.info(f"Filtered to {len(symbols_df)} common stocks")
+
+        # Filter out foreign OTC / ADR tickers (5+ chars ending in F or Y)
+        if "Code" in symbols_df.columns:
+            before = len(symbols_df)
+            symbols_df = symbols_df[symbols_df["Code"].apply(is_us_domestic_ticker)]
+            n_removed = before - len(symbols_df)
+            if n_removed > 0:
+                logger.info(
+                    f"Excluded {n_removed} foreign OTC/ADR tickers, "
+                    f"{len(symbols_df)} US domestic stocks remaining"
+                )
 
         symbols = list(symbols_df["Code"])
         if max_symbols:
